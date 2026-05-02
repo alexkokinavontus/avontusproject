@@ -3,147 +3,84 @@ import { fetchAllData } from "./api/azure";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const BUDGET = 155000;
-const COLORS = ["#60a5fa","#a78bfa","#34d399","#f59e0b","#f87171","#38bdf8","#fb923c","#e879f9","#4ade80","#facc15","#818cf8","#2dd4bf"];
-const fmt = (n, d = 0) => n == null ? "$0" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-const fmtDate = d => new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const COLORS = ["#60a5fa","#a78bfa","#34d399","#fb923c","#f87171","#2dd4bf","#facc15","#e879f9","#4ade80","#f59e0b","#818cf8","#38bdf8"];
+const fmt = (n, d = 0) => !n ? "$0" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtDate = s => new Date(s + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+// App Service resource types
+const AS_TYPES = ["microsoft.web/sites","microsoft.web/serverfarms","microsoft.web/hostingenvironments","microsoft.web/staticsites","microsoft.web/certificates"];
+const AS_SERVICES = ["app service","azure app service","app service plan","web apps"];
+const isAppService = r =>
+  AS_TYPES.some(t => r.resourceType?.toLowerCase().includes(t)) ||
+  AS_SERVICES.some(s => r.service?.toLowerCase().includes(s));
 
 function getDefaultDates() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  return {
-    start: start.toISOString().split("T")[0],
-    end: now.toISOString().split("T")[0],
-  };
+  const n = new Date();
+  return { start: new Date(n.getFullYear(), n.getMonth(), 1).toISOString().split("T")[0], end: n.toISOString().split("T")[0] };
 }
 
-// ── Mini Components ───────────────────────────────────────────────────────────
-function Pill({ label, color = "#60a5fa" }) {
-  return <span className="pill" style={{ background: color + "22", color, borderColor: color + "44" }}>{label}</span>;
-}
-
-function MiniBar({ value, max, color }) {
-  return (
-    <div className="mini-bar-track">
-      <div className="mini-bar-fill" style={{ width: `${Math.min((value / max) * 100, 100)}%`, background: color }} />
-    </div>
-  );
-}
-
-function Sparkline({ values = [], color = "#60a5fa", w = 100, h = 28 }) {
-  if (values.length < 2) return <span style={{ color: "var(--t3)", fontSize: 10 }}>—</span>;
-  const max = Math.max(...values, 1);
-  const pts = values.map((v, i) => `${(i / (values.length - 1)) * w},${h - (v / max) * h}`).join(" ");
-  return (
-    <svg width={w} height={h} style={{ overflow: "visible", display: "block" }}>
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function TrendBadge({ current, previous }) {
-  if (!previous) return null;
-  const pct = ((current - previous) / previous) * 100;
-  const up = pct > 0;
-  return (
-    <span className={`trend-badge ${up ? "up" : "down"}`}>
-      {up ? "▲" : "▼"} {Math.abs(pct).toFixed(1)}%
-    </span>
-  );
-}
-
-// ── Bar Chart ─────────────────────────────────────────────────────────────────
-function StackedBar({ months, services, colorMap }) {
-  if (!months.length) return <div className="empty-state">No trend data for this period</div>;
-  const max = Math.max(...months.map(m => m.total), 1);
-  const topServices = services.slice(0, 8);
-  return (
-    <div className="chart-outer">
-      <div className="chart-yaxis">
-        {[1, 0.75, 0.5, 0.25, 0].map(p => (
-          <div key={p} className="y-label">{fmt(max * p, 0)}</div>
-        ))}
-      </div>
-      <div className="chart-body">
-        <div className="chart-gridlines">
-          {[0.25, 0.5, 0.75, 1].map(p => (
-            <div key={p} className="gridline" style={{ bottom: `${p * 100}%` }} />
-          ))}
-        </div>
-        <div className="bar-row">
-          {months.map((m, i) => (
-            <div key={i} className="bar-col">
-              <div className="bar-stack" style={{ height: `${(m.total / max) * 100}%` }}>
-                {topServices.map(svc => {
-                  const val = m[svc] || 0;
-                  const pct = (val / m.total) * 100;
-                  return pct > 0 ? (
-                    <div key={svc} className="bar-seg" style={{ height: `${pct}%`, background: colorMap[svc] || "#60a5fa" }}
-                      title={`${svc}: ${fmt(val)}`} />
-                  ) : null;
-                })}
-              </div>
-              <div className="bar-label">{m.label}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Daily Trend Line ──────────────────────────────────────────────────────────
-function DailyLine({ days }) {
-  if (days.length < 2) return <div className="empty-state">No daily data</div>;
-  const max = Math.max(...days.map(d => d.total), 1);
-  const W = 800, H = 100;
-  const pts = days.map((d, i) => `${(i / (days.length - 1)) * W},${H - (d.total / max) * H}`).join(" ");
-  const area = `0,${H} ${pts} ${W},${H}`;
-  return (
-    <div className="daily-chart">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: 80 }}>
-        <defs>
-          <linearGradient id="lg" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#60a5fa" stopOpacity="0.3" />
-            <stop offset="100%" stopColor="#60a5fa" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <polygon points={area} fill="url(#lg)" />
-        <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinejoin="round" />
-      </svg>
-      <div className="daily-labels">
-        {days.filter((_, i) => i % Math.ceil(days.length / 8) === 0).map((d, i) => (
-          <span key={i} className="daily-label">{new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Date Range Picker ─────────────────────────────────────────────────────────
 const PRESETS = [
-  { label: "MTD", getRange: () => { const n = new Date(); return { start: new Date(n.getFullYear(), n.getMonth(), 1).toISOString().split("T")[0], end: n.toISOString().split("T")[0] }; } },
-  { label: "Last 30d", getRange: () => { const n = new Date(); const s = new Date(n); s.setDate(s.getDate() - 30); return { start: s.toISOString().split("T")[0], end: n.toISOString().split("T")[0] }; } },
-  { label: "Last 90d", getRange: () => { const n = new Date(); const s = new Date(n); s.setDate(s.getDate() - 90); return { start: s.toISOString().split("T")[0], end: n.toISOString().split("T")[0] }; } },
-  { label: "Last 6m", getRange: () => { const n = new Date(); const s = new Date(n); s.setMonth(s.getMonth() - 6); return { start: s.toISOString().split("T")[0], end: n.toISOString().split("T")[0] }; } },
-  { label: "YTD", getRange: () => { const n = new Date(); return { start: `${n.getFullYear()}-01-01`, end: n.toISOString().split("T")[0] }; } },
-  { label: "Last 12m", getRange: () => { const n = new Date(); const s = new Date(n); s.setFullYear(s.getFullYear() - 1); return { start: s.toISOString().split("T")[0], end: n.toISOString().split("T")[0] }; } },
+  { label: "MTD",      fn: () => { const n=new Date(); return { start:new Date(n.getFullYear(),n.getMonth(),1).toISOString().split("T")[0], end:n.toISOString().split("T")[0] }; } },
+  { label: "Last 30d", fn: () => { const n=new Date(),s=new Date(n); s.setDate(s.getDate()-30); return { start:s.toISOString().split("T")[0], end:n.toISOString().split("T")[0] }; } },
+  { label: "Last 90d", fn: () => { const n=new Date(),s=new Date(n); s.setDate(s.getDate()-90); return { start:s.toISOString().split("T")[0], end:n.toISOString().split("T")[0] }; } },
+  { label: "Last 6m",  fn: () => { const n=new Date(),s=new Date(n); s.setMonth(s.getMonth()-6); return { start:s.toISOString().split("T")[0], end:n.toISOString().split("T")[0] }; } },
+  { label: "YTD",      fn: () => { const n=new Date(); return { start:`${n.getFullYear()}-01-01`, end:n.toISOString().split("T")[0] }; } },
+  { label: "Last 12m", fn: () => { const n=new Date(),s=new Date(n); s.setFullYear(s.getFullYear()-1); return { start:s.toISOString().split("T")[0], end:n.toISOString().split("T")[0] }; } },
 ];
 
-function DateRangePicker({ start, end, onChange, activePreset, onPreset }) {
+// ── UI Components ─────────────────────────────────────────────────────────────
+function Spark({ vals=[], color="#60a5fa", w=90, h=26 }) {
+  if (vals.length < 2) return null;
+  const max = Math.max(...vals, 1);
+  const pts = vals.map((v,i) => `${(i/(vals.length-1))*w},${h-(v/max)*h}`).join(" ");
+  return <svg width={w} height={h} style={{overflow:"visible",display:"block"}}><polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/></svg>;
+}
+
+function Bar({ pct, color }) {
+  return <div className="bar-track"><div className="bar-fill" style={{width:`${Math.min(pct,100)}%`,background:color}}/></div>;
+}
+
+function StackChart({ months, services, colorMap }) {
+  if (!months.length) return <div className="empty-msg">No trend data for selected period</div>;
+  const max = Math.max(...months.map(m => m.total), 1);
   return (
-    <div className="date-picker">
-      <div className="preset-btns">
-        {PRESETS.map(p => (
-          <button key={p.label} className={`preset-btn ${activePreset === p.label ? "active" : ""}`}
-            onClick={() => { onPreset(p.label); onChange(p.getRange()); }}>
-            {p.label}
-          </button>
+    <div className="stack-chart">
+      <div className="sc-bars">
+        {months.map((m, i) => (
+          <div key={i} className="sc-col">
+            <div className="sc-stack" style={{ height:`${(m.total/max)*100}%` }}>
+              {services.map(svc => {
+                const v = m[svc] || 0;
+                if (!v) return null;
+                return <div key={svc} className="sc-seg" style={{ height:`${(v/m.total)*100}%`, background:colorMap[svc]||"#60a5fa" }} title={`${svc}: ${fmt(v)}`}/>;
+              })}
+            </div>
+            <div className="sc-lbl">{m.label}</div>
+          </div>
         ))}
       </div>
-      <div className="date-inputs">
-        <input type="date" value={start} max={end} onChange={e => { onPreset(null); onChange({ start: e.target.value, end }); }} className="date-input" />
-        <span className="date-sep">→</span>
-        <input type="date" value={end} min={start} onChange={e => { onPreset(null); onChange({ start, end: e.target.value }); }} className="date-input" />
+    </div>
+  );
+}
+
+function DailyChart({ days }) {
+  if (days.length < 2) return <div className="empty-msg">No daily data</div>;
+  const vals = days.map(d => d.total);
+  const max = Math.max(...vals, 1);
+  const W = 600, H = 80;
+  const pts = vals.map((v,i) => `${(i/(vals.length-1))*W},${H-(v/max)*H}`).join(" ");
+  const area = `0,${H} ${pts} ${W},${H}`;
+  return (
+    <div className="daily-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{width:"100%",height:70}}>
+        <defs><linearGradient id="dg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#60a5fa" stopOpacity=".25"/><stop offset="100%" stopColor="#60a5fa" stopOpacity="0"/></linearGradient></defs>
+        <polygon points={area} fill="url(#dg)"/>
+        <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinejoin="round"/>
+      </svg>
+      <div className="daily-lbls">
+        {days.filter((_,i) => i % Math.max(1,Math.floor(days.length/7)) === 0).map((d,i) => (
+          <span key={i}>{new Date(d.date+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"})}</span>
+        ))}
       </div>
     </div>
   );
@@ -151,342 +88,317 @@ function DateRangePicker({ start, end, onChange, activePreset, onPreset }) {
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const defaults = getDefaultDates();
-  const [dateRange, setDateRange] = useState(defaults);
+  const [dateRange, setDateRange] = useState(getDefaultDates);
   const [activePreset, setActivePreset] = useState("MTD");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [lastRefresh, setLastRefresh] = useState(null);
-  const [activeView, setActiveView] = useState("Overview");
-  const [expandedRows, setExpandedRows] = useState({});
-  const [searchTerm, setSearchTerm] = useState("");
-  const [sortBy, setSortBy] = useState("cost");
-  const [selectedSub, setSelectedSub] = useState("all");
-  const [expandedServices, setExpandedServices] = useState({});
+  const [refreshedAt, setRefreshedAt] = useState(null);
+  const [view, setView] = useState("overview");
+  const [selectedSubId, setSelectedSubId] = useState(null); // null = all
+  const [expandedSvc, setExpandedSvc] = useState({});
+  const [expandedRg, setExpandedRg] = useState({});
+  const [search, setSearch] = useState("");
+  const [sortDir, setSortDir] = useState("desc");
+  const [debugMode, setDebugMode] = useState(false);
 
-  const load = useCallback(async (range = dateRange) => {
-    setLoading(true); setError(null);
+  const load = useCallback(async (range) => {
+    setLoading(true); setError(null); setExpandedSvc({}); setExpandedRg({});
     try {
       const result = await fetchAllData(range.start, range.end);
       setData(result);
-      setLastRefresh(new Date());
-    } catch (e) { setError(e.message); }
+      setRefreshedAt(new Date());
+    } catch(e) { setError(e.message); }
     finally { setLoading(false); }
-  }, [dateRange]);
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(dateRange); }, []);
 
-  const handleDateChange = useCallback((range) => {
+  const applyPreset = (p) => {
+    const range = p.fn();
+    setActivePreset(p.label);
     setDateRange(range);
     load(range);
-  }, [load]);
+  };
 
-  // ── Process cost data ──
-  const processed = useMemo(() => {
+  const applyCustomDate = (field, val) => {
+    const range = { ...dateRange, [field]: val };
+    setActivePreset(null);
+    setDateRange(range);
+    load(range);
+  };
+
+  // ── Processed data ──────────────────────────────────────────────────────────
+  const P = useMemo(() => {
     if (!data) return null;
 
-    // Flat rows: { sub, service, rg, resourceId, resourceType, cost }
-    const rows = [];
-    (data.costs || []).forEach(c => {
-      const cols = c.data?.properties?.columns?.map(col => col.name) || [];
-      const costIdx = cols.findIndex(n => n === "Cost" || n === "PreTaxCost");
-      const svcIdx = cols.findIndex(n => n === "ServiceName");
-      const rgIdx = cols.findIndex(n => n === "ResourceGroupName");
-      const ridIdx = cols.findIndex(n => n === "ResourceId");
-      const rtIdx = cols.findIndex(n => n === "ResourceType");
+    // Filter by selected subscription
+    const rows = selectedSubId
+      ? data.allDetailed.filter(r => r.subId === selectedSubId)
+      : data.allDetailed;
 
-      (c.data?.properties?.rows || []).forEach(r => {
-        const cost = costIdx >= 0 ? (r[costIdx] || 0) : 0;
-        if (cost < 0.001) return;
-        rows.push({
-          sub: c.subscription?.displayName || c.subscription?.subscriptionId,
-          subId: c.subscription?.subscriptionId,
-          service: svcIdx >= 0 ? (r[svcIdx] || "Unknown") : "Unknown",
-          rg: rgIdx >= 0 ? (r[rgIdx] || "Unknown") : "Unknown",
-          resourceId: ridIdx >= 0 ? (r[ridIdx] || "") : "",
-          resourceType: rtIdx >= 0 ? (r[rtIdx] || "") : "",
-          cost,
-        });
-      });
-    });
+    const monthlyRows = selectedSubId
+      ? data.allMonthly.filter(r => r.subId === selectedSubId)
+      : data.allMonthly;
 
-    // Monthly trend
-    const monthMap = {};
-    const allServices = new Set();
-    (data.trends || []).forEach(t => {
-      const cols = t.data?.properties?.columns?.map(c => c.name) || [];
-      const costIdx = cols.findIndex(n => n === "Cost" || n === "PreTaxCost");
-      const dateIdx = cols.findIndex(n => n === "BillingMonth" || n === "UsageDate");
-      const svcIdx = cols.findIndex(n => n === "ServiceName");
-      (t.data?.properties?.rows || []).forEach(r => {
-        const cost = costIdx >= 0 ? (r[costIdx] || 0) : 0;
-        if (!cost) return;
-        const rawDate = dateIdx >= 0 ? r[dateIdx] : null;
-        if (!rawDate) return;
-        const d = new Date(rawDate);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-        const label = d.toLocaleString("default", { month: "short", year: "2-digit" });
-        if (!monthMap[key]) monthMap[key] = { label, total: 0 };
-        const svc = svcIdx >= 0 ? (r[svcIdx] || "Other") : "Other";
-        allServices.add(svc);
-        monthMap[key][svc] = (monthMap[key][svc] || 0) + cost;
-        monthMap[key].total += cost;
-      });
-    });
-    const months = Object.values(monthMap).sort((a, b) => a.label.localeCompare(b.label));
+    const dailyRows = selectedSubId
+      ? data.allDaily.filter(r => r.subId === selectedSubId)
+      : data.allDaily;
 
-    // Daily trend
-    const dayMap = {};
-    (data.daily || []).forEach(t => {
-      const cols = t.data?.properties?.columns?.map(c => c.name) || [];
-      const costIdx = cols.findIndex(n => n === "Cost" || n === "PreTaxCost");
-      const dateIdx = cols.findIndex(n => n === "UsageDate" || n === "BillingMonth");
-      (t.data?.properties?.rows || []).forEach(r => {
-        const cost = costIdx >= 0 ? (r[costIdx] || 0) : 0;
-        if (!cost) return;
-        const date = dateIdx >= 0 ? String(r[dateIdx]) : null;
-        if (!date) return;
-        const key = date.slice(0, 10);
-        if (!dayMap[key]) dayMap[key] = { date: key, total: 0 };
-        dayMap[key].total += cost;
-      });
-    });
-    const days = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
+    // Apply search
+    const q = search.toLowerCase();
+    const filtered = q
+      ? rows.filter(r => r.service?.toLowerCase().includes(q) || r.rg?.toLowerCase().includes(q) || r.resourceId?.toLowerCase().includes(q) || r.resourceType?.toLowerCase().includes(q))
+      : rows;
 
-    // Service totals
+    // Grand total
+    const grandTotal = rows.reduce((s, r) => s + r.cost, 0);
+
+    // Services map
     const svcMap = {};
-    rows.forEach(r => {
+    filtered.forEach(r => {
       if (!svcMap[r.service]) svcMap[r.service] = { name: r.service, total: 0, subs: {}, rgs: {}, resources: [] };
       svcMap[r.service].total += r.cost;
       svcMap[r.service].subs[r.sub] = (svcMap[r.service].subs[r.sub] || 0) + r.cost;
-      svcMap[r.service].rgs[r.rg] = (svcMap[r.service].rgs[r.rg] || 0) + r.cost;
+      const rgKey = r.rg || "(no resource group)";
+      svcMap[r.service].rgs[rgKey] = (svcMap[r.service].rgs[rgKey] || 0) + r.cost;
       svcMap[r.service].resources.push(r);
     });
-    const services = Object.values(svcMap).sort((a, b) => b.total - a.total);
+    const services = Object.values(svcMap).sort((a,b) => sortDir==="desc" ? b.total-a.total : a.total-b.total);
 
     // Color map
     const colorMap = {};
-    services.forEach((s, i) => { colorMap[s.name] = COLORS[i % COLORS.length]; });
-    Array.from(allServices).forEach((s, i) => { if (!colorMap[s]) colorMap[s] = COLORS[i % COLORS.length]; });
+    [...services].sort((a,b)=>b.total-a.total).forEach((s,i) => { colorMap[s.name] = COLORS[i%COLORS.length]; });
 
-    // Sub totals
-    const subMap = {};
-    rows.forEach(r => {
-      if (!subMap[r.subId]) subMap[r.subId] = { id: r.subId, name: r.sub, total: 0, services: {} };
-      subMap[r.subId].total += r.cost;
-      subMap[r.subId].services[r.service] = (subMap[r.subId].services[r.service] || 0) + r.cost;
+    // Monthly trend
+    const monthMap = {};
+    monthlyRows.forEach(r => {
+      const ds = r.date.length >= 6 ? r.date.slice(0,7) : r.date;
+      const key = ds.replace(/(\d{4})(\d{2})/, "$1-$2");
+      const d = new Date(key + "-01T12:00:00");
+      const label = d.toLocaleString("default",{month:"short",year:"2-digit"});
+      if (!monthMap[key]) monthMap[key] = { label, total:0 };
+      monthMap[key][r.service] = (monthMap[key][r.service]||0) + r.cost;
+      monthMap[key].total += r.cost;
     });
-    const subs = Object.values(subMap).sort((a, b) => b.total - a.total);
+    const months = Object.values(monthMap).sort((a,b)=>a.label.localeCompare(b.label));
 
-    const grandTotal = rows.reduce((s, r) => s + r.cost, 0);
+    // Daily trend
+    const dayMap = {};
+    dailyRows.forEach(r => {
+      const ds = r.date.length >= 8 ? (r.date.slice(0,4)+"-"+r.date.slice(4,6)+"-"+r.date.slice(6,8)) : r.date.slice(0,10);
+      if (!dayMap[ds]) dayMap[ds] = { date:ds, total:0 };
+      dayMap[ds].total += r.cost;
+    });
+    const days = Object.values(dayMap).sort((a,b)=>a.date.localeCompare(b.date));
 
-    // App Services specifically
-    const appServices = rows.filter(r =>
-      r.service?.toLowerCase().includes("app service") ||
-      r.resourceType?.toLowerCase().includes("microsoft.web/sites") ||
-      r.resourceType?.toLowerCase().includes("microsoft.web/serverfarms") ||
-      r.service?.toLowerCase().includes("azure app service")
-    );
+    // Subscription totals
+    const subMap = {};
+    data.allDetailed.forEach(r => {
+      if (!subMap[r.subId]) subMap[r.subId] = { id:r.subId, name:r.sub, total:0, services:{}, appSvcTotal:0 };
+      subMap[r.subId].total += r.cost;
+      subMap[r.subId].services[r.service] = (subMap[r.subId].services[r.service]||0)+r.cost;
+      if (isAppService(r)) subMap[r.subId].appSvcTotal += r.cost;
+    });
+    const subs = Object.values(subMap).sort((a,b)=>b.total-a.total);
 
-    return { rows, months, days, services, colorMap, subs, grandTotal, appServices };
-  }, [data]);
+    // App Services
+    const appSvcRows = filtered.filter(isAppService);
+    const appSvcByRg = {};
+    appSvcRows.forEach(r => {
+      const rg = r.rg || "(no resource group)";
+      if (!appSvcByRg[rg]) appSvcByRg[rg] = { rg, sub:r.sub, subId:r.subId, total:0, resources:[] };
+      appSvcByRg[rg].total += r.cost;
+      appSvcByRg[rg].resources.push(r);
+    });
+    const appSvcGroups = Object.values(appSvcByRg).sort((a,b)=>b.total-a.total);
+    const appSvcTotal = appSvcRows.reduce((s,r)=>s+r.cost,0);
 
-  // ── Filter rows ──
-  const filteredRows = useMemo(() => {
-    if (!processed) return [];
-    let rows = processed.rows;
-    if (selectedSub !== "all") rows = rows.filter(r => r.subId === selectedSub);
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
-      rows = rows.filter(r => r.service?.toLowerCase().includes(q) || r.rg?.toLowerCase().includes(q) || r.sub?.toLowerCase().includes(q));
-    }
-    if (sortBy === "cost") rows = [...rows].sort((a, b) => b.cost - a.cost);
-    else if (sortBy === "service") rows = [...rows].sort((a, b) => a.service.localeCompare(b.service));
-    else if (sortBy === "rg") rows = [...rows].sort((a, b) => a.rg.localeCompare(b.rg));
-    return rows;
-  }, [processed, selectedSub, searchTerm, sortBy]);
+    return { rows:filtered, grandTotal, services, colorMap, months, days, subs, appSvcRows, appSvcGroups, appSvcTotal };
+  }, [data, selectedSubId, search, sortDir]);
 
-  const filteredServices = useMemo(() => {
-    if (!processed) return [];
-    let svcs = processed.services;
-    if (selectedSub !== "all") {
-      const subName = data?.subscriptions?.find(s => s.subscriptionId === selectedSub)?.displayName;
-      svcs = svcs.map(s => ({
-        ...s,
-        total: s.subs[subName] || 0,
-        resources: s.resources.filter(r => r.subId === selectedSub),
-      })).filter(s => s.total > 0).sort((a, b) => b.total - a.total);
-    }
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
-      svcs = svcs.filter(s => s.name.toLowerCase().includes(q));
-    }
-    return svcs;
-  }, [processed, selectedSub, searchTerm, data]);
-
-  const grandTotal = processed?.grandTotal || 0;
+  const selectedSub = data?.subscriptions?.find(s => s.subscriptionId === selectedSubId);
   const now = new Date();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+  const dayOfMonth = now.getDate();
 
   if (loading) return (
     <div className="splash">
-      <div className="splash-spinner"><div className="sp-ring" /><div className="sp-inner">A</div></div>
-      <div className="splash-msg">Fetching cost data…</div>
-      <div className="splash-range">{fmtDate(dateRange.start)} → {fmtDate(dateRange.end)}</div>
+      <div className="sp-ring-wrap"><div className="sp-ring"/><div className="sp-logo">A</div></div>
+      <div className="sp-title">Loading Azure Cost Data</div>
+      <div className="sp-range">{fmtDate(dateRange.start)} → {fmtDate(dateRange.end)}</div>
+      <div className="sp-subs">{data?.subscriptions?.length || "..."} subscriptions</div>
     </div>
   );
 
   if (error) return (
     <div className="splash">
       <div className="err-card">
-        <div className="err-ico">⚠</div>
-        <div className="err-ttl">Failed to load</div>
-        <div className="err-msg">{error}</div>
-        <button className="btn-p" onClick={() => load()}>↻ Retry</button>
+        <div className="err-icon">⚠</div>
+        <h3>Connection Error</h3>
+        <p className="err-msg">{error}</p>
+        <p className="err-hint">Check that the Azure Function proxy is running and the AzureReader app has Cost Management Reader + Reader roles on all subscriptions.</p>
+        <button className="btn-primary" onClick={() => load(dateRange)}>↻ Retry</button>
       </div>
     </div>
   );
 
+  if (!P) return null;
+
   return (
     <div className="shell">
-      {/* Sidebar */}
+      {/* ── Sidebar ── */}
       <aside className="sidebar">
         <div className="sb-brand">
           <div className="sb-mark">A</div>
-          <div><div className="sb-title">AzureReader</div><div className="sb-domain">avontus.com</div></div>
+          <div><div className="sb-name">AzureReader</div><div className="sb-tenant">avontus.com</div></div>
         </div>
+
         <nav className="sb-nav">
           {[
-            { id: "Overview", icon: "▣", label: "Overview" },
-            { id: "Services", icon: "⬡", label: "By Service" },
-            { id: "AppServices", icon: "⬢", label: "App Services" },
-            { id: "Subscriptions", icon: "◈", label: "Subscriptions" },
-            { id: "Breakdown", icon: "≡", label: "Full Breakdown" },
+            {id:"overview",  icon:"▣", label:"Overview"},
+            {id:"services",  icon:"⬡", label:"By Service"},
+            {id:"appsvcs",   icon:"⬢", label:"App Services"},
+            {id:"subs",      icon:"◈", label:"Subscriptions"},
+            {id:"breakdown", icon:"≡", label:"Full Breakdown"},
           ].map(v => (
-            <button key={v.id} className={`sb-item ${activeView === v.id ? "active" : ""}`} onClick={() => setActiveView(v.id)}>
+            <button key={v.id} className={`sb-item${view===v.id?" active":""}`} onClick={()=>setView(v.id)}>
               <span className="sb-ico">{v.icon}</span>{v.label}
             </button>
           ))}
         </nav>
+
         <div className="sb-divider">SUBSCRIPTIONS</div>
-        <div className="sb-subs">
-          <button className={`sb-sub-item ${selectedSub === "all" ? "active" : ""}`} onClick={() => setSelectedSub("all")}>
-            <span className="sb-sub-dot" style={{ background: "#60a5fa" }} />All subscriptions
+        <div className="sb-subs-list">
+          <button className={`sb-sub${!selectedSubId?" sel":""}`} onClick={()=>setSelectedSubId(null)}>
+            <span className="sb-dot" style={{background:"#60a5fa"}}/>
+            <span className="sb-sub-label">All subscriptions</span>
+            <span className="sb-sub-cost">{fmt(P.grandTotal)}</span>
           </button>
-          {(data?.subscriptions || []).map((s, i) => (
-            <button key={s.subscriptionId} className={`sb-sub-item ${selectedSub === s.subscriptionId ? "active" : ""}`}
-              onClick={() => setSelectedSub(s.subscriptionId)}>
-              <span className="sb-sub-dot" style={{ background: COLORS[i % COLORS.length] }} />
-              <span className="sb-sub-name">{s.displayName}</span>
+          {P.subs.map((s,i) => (
+            <button key={s.id} className={`sb-sub${selectedSubId===s.id?" sel":""}`} onClick={()=>setSelectedSubId(s.id)}>
+              <span className="sb-dot" style={{background:COLORS[i%COLORS.length]}}/>
+              <span className="sb-sub-label">{s.name}</span>
+              <span className="sb-sub-cost">{fmt(s.total)}</span>
             </button>
           ))}
         </div>
-        <div className="sb-foot">
-          <div>bd98204b · AzureReader</div>
-          {lastRefresh && <div>{lastRefresh.toLocaleTimeString()}</div>}
+
+        <div className="sb-footer">
+          <div>Tenant: bd98204b</div>
+          {refreshedAt && <div>{refreshedAt.toLocaleTimeString()}</div>}
+          {data?.errors?.length > 0 && <div className="sb-warn">⚠ {data.errors.length} errors</div>}
         </div>
       </aside>
 
-      {/* Main */}
+      {/* ── Main ── */}
       <div className="main">
-        {/* Top control bar */}
-        <div className="control-bar">
-          <div className="ctrl-left">
-            <div className="ctrl-title">{activeView === "AppServices" ? "App Services Cost Analysis" : activeView === "Services" ? "Cost by Service" : activeView === "Breakdown" ? "Full Cost Breakdown" : activeView === "Subscriptions" ? "Subscriptions" : "Cost Overview"}</div>
-            <div className="ctrl-range">{fmtDate(dateRange.start)} — {fmtDate(dateRange.end)}</div>
+        {/* Control bar */}
+        <div className="ctrl-bar">
+          <div className="ctrl-info">
+            <span className="ctrl-title">
+              {!selectedSubId ? "All Subscriptions" : selectedSub?.displayName}
+            </span>
+            <span className="ctrl-range">{fmtDate(dateRange.start)} — {fmtDate(dateRange.end)}</span>
           </div>
-          <div className="ctrl-right">
-            <DateRangePicker start={dateRange.start} end={dateRange.end} onChange={handleDateChange} activePreset={activePreset} onPreset={setActivePreset} />
-            <button className="ctrl-refresh" onClick={() => load()} title="Refresh">↻</button>
+          <div className="ctrl-filters">
+            <div className="presets">
+              {PRESETS.map(p => (
+                <button key={p.label} className={`preset${activePreset===p.label?" active":""}`} onClick={()=>applyPreset(p)}>{p.label}</button>
+              ))}
+            </div>
+            <div className="date-range">
+              <input type="date" className="date-in" value={dateRange.start} max={dateRange.end}
+                onChange={e=>applyCustomDate("start",e.target.value)}/>
+              <span className="date-arrow">→</span>
+              <input type="date" className="date-in" value={dateRange.end} min={dateRange.start}
+                onChange={e=>applyCustomDate("end",e.target.value)}/>
+            </div>
+            <button className="refresh-btn" onClick={()=>load(dateRange)} title="Refresh">↻</button>
           </div>
         </div>
 
-        {/* Filter bar */}
-        {(activeView === "Services" || activeView === "Breakdown" || activeView === "AppServices") && (
-          <div className="filter-bar">
-            <div className="search-wrap">
-              <span className="search-ico">⌕</span>
-              <input className="search-input" placeholder="Search services, resource groups…" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-              {searchTerm && <button className="search-clear" onClick={() => setSearchTerm("")}>×</button>}
-            </div>
-            <select className="sort-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
-              <option value="cost">Sort: Highest cost</option>
-              <option value="service">Sort: Service name</option>
-              <option value="rg">Sort: Resource group</option>
+        {/* Search bar for relevant views */}
+        {["services","appsvcs","breakdown"].includes(view) && (
+          <div className="search-bar">
+            <span className="si">⌕</span>
+            <input className="si-input" placeholder="Search services, resource groups, resource IDs…"
+              value={search} onChange={e=>setSearch(e.target.value)}/>
+            {search && <button className="si-clear" onClick={()=>setSearch("")}>×</button>}
+            <select className="si-sort" value={sortDir} onChange={e=>setSortDir(e.target.value)}>
+              <option value="desc">Highest cost first</option>
+              <option value="asc">Lowest cost first</option>
             </select>
-            <div className="result-count">{filteredServices.length} services · {fmt(grandTotal)}</div>
+            <span className="si-count">{P.services.length} services · {P.rows.length} line items · {fmt(P.grandTotal)}</span>
           </div>
         )}
 
         <div className="content">
-          {/* ── OVERVIEW ── */}
-          {activeView === "Overview" && processed && (
+
+          {/* ═══════════════════════════════ OVERVIEW ═══════════════════════════════ */}
+          {view==="overview" && (
             <>
-              {/* KPI row */}
-              <div className="kpi-row">
-                <div className="kpi-card accent-blue">
-                  <div className="kpi-label">Total Spend</div>
-                  <div className="kpi-val">{fmt(grandTotal)}</div>
+              <div className="kpis">
+                <div className="kpi blue">
+                  <div className="kpi-lbl">Total Spend</div>
+                  <div className="kpi-val">{fmt(P.grandTotal)}</div>
                   <div className="kpi-sub">{fmtDate(dateRange.start)} – {fmtDate(dateRange.end)}</div>
                 </div>
-                <div className="kpi-card accent-purple">
-                  <div className="kpi-label">Budget ({fmt(BUDGET)}/mo)</div>
-                  <div className="kpi-val" style={{ color: grandTotal > BUDGET ? "var(--red)" : "var(--green)" }}>
-                    {grandTotal > BUDGET ? `+${fmt(grandTotal - BUDGET)} over` : `${fmt(BUDGET - grandTotal)} under`}
+                <div className="kpi" style={{"--ac": P.grandTotal>BUDGET?"var(--red)":"var(--green)"}}>
+                  <div className="kpi-lbl">vs Budget ({fmt(BUDGET)})</div>
+                  <div className="kpi-val" style={{color:P.grandTotal>BUDGET?"var(--red)":"var(--green)"}}>
+                    {P.grandTotal>BUDGET?`+${fmt(P.grandTotal-BUDGET)} over`:`${fmt(BUDGET-P.grandTotal)} under`}
                   </div>
-                  <div className="kpi-progress"><div className="kpi-prog-fill" style={{ width: `${Math.min(grandTotal / BUDGET * 100, 100)}%`, background: grandTotal > BUDGET ? "var(--red)" : "var(--green)" }} /></div>
+                  <Bar pct={P.grandTotal/BUDGET*100} color={P.grandTotal>BUDGET?"var(--red)":"var(--green)"}/>
                 </div>
-                <div className="kpi-card accent-green">
-                  <div className="kpi-label">Subscriptions</div>
-                  <div className="kpi-val">{processed.subs.length}</div>
-                  <div className="kpi-sub">Active in avontus.com</div>
+                <div className="kpi purple">
+                  <div className="kpi-lbl">App Services</div>
+                  <div className="kpi-val">{fmt(P.appSvcTotal)}</div>
+                  <div className="kpi-sub">{P.appSvcRows.length} resources · {P.grandTotal?(P.appSvcTotal/P.grandTotal*100).toFixed(1):0}% of total</div>
                 </div>
-                <div className="kpi-card accent-amber">
-                  <div className="kpi-label">Top Service</div>
-                  <div className="kpi-val" style={{ fontSize: 16 }}>{processed.services[0]?.name?.split(" ").slice(0, 3).join(" ") || "—"}</div>
-                  <div className="kpi-sub">{fmt(processed.services[0]?.total)} · {processed.services[0] ? ((processed.services[0].total / grandTotal) * 100).toFixed(1) : 0}%</div>
+                <div className="kpi amber">
+                  <div className="kpi-lbl">Subscriptions</div>
+                  <div className="kpi-val">{P.subs.length}</div>
+                  <div className="kpi-sub">{P.services.length} services used</div>
                 </div>
               </div>
 
-              {/* Trend + daily */}
               <div className="two-col">
                 <div className="panel">
-                  <div className="panel-hdr"><span className="panel-ttl">Monthly Cost Trend</span><span className="panel-sub">{processed.months.length} months</span></div>
-                  <StackedBar months={processed.months} services={processed.services.slice(0, 8).map(s => s.name)} colorMap={processed.colorMap} />
-                  <div className="legend-row">
-                    {processed.services.slice(0, 6).map((s, i) => (
-                      <div key={s.name} className="leg-item">
-                        <span className="leg-dot" style={{ background: processed.colorMap[s.name] }} />
-                        {s.name.replace("Azure ", "").replace("Microsoft ", "")}
-                      </div>
+                  <div className="phdr"><span className="ptitle">Monthly Trend</span><span className="psub">{P.months.length} months</span></div>
+                  <StackChart months={P.months} services={P.services.slice(0,8).map(s=>s.name)} colorMap={P.colorMap}/>
+                  <div className="leg">
+                    {P.services.slice(0,6).map(s=>(
+                      <div key={s.name} className="leg-i"><span className="leg-dot" style={{background:P.colorMap[s.name]}}/>{s.name.replace("Azure ","")}</div>
                     ))}
                   </div>
                 </div>
                 <div className="panel">
-                  <div className="panel-hdr"><span className="panel-ttl">Daily Spend</span><span className="panel-sub">{processed.days.length} days</span></div>
-                  <DailyLine days={processed.days} />
-                  <div className="daily-stats">
-                    <div className="ds-item"><span>Avg/day</span><strong>{fmt(processed.days.reduce((s, d) => s + d.total, 0) / (processed.days.length || 1))}</strong></div>
-                    <div className="ds-item"><span>Peak day</span><strong>{fmt(Math.max(...processed.days.map(d => d.total)))}</strong></div>
-                    <div className="ds-item"><span>Days tracked</span><strong>{processed.days.length}</strong></div>
+                  <div className="phdr"><span className="ptitle">Daily Spend</span><span className="psub">{P.days.length} days</span></div>
+                  <DailyChart days={P.days}/>
+                  <div className="day-stats">
+                    <div className="ds"><span>Avg/day</span><strong>{fmt(P.days.reduce((s,d)=>s+d.total,0)/(P.days.length||1))}</strong></div>
+                    <div className="ds"><span>Peak</span><strong>{fmt(Math.max(...P.days.map(d=>d.total),0))}</strong></div>
+                    <div className="ds"><span>Days</span><strong>{P.days.length}</strong></div>
                   </div>
                 </div>
               </div>
 
-              {/* Top services quick view */}
               <div className="panel">
-                <div className="panel-hdr"><span className="panel-ttl">Top Services by Cost</span><button className="view-all-btn" onClick={() => setActiveView("Services")}>View all →</button></div>
+                <div className="phdr">
+                  <span className="ptitle">Top Services</span>
+                  <button className="view-more" onClick={()=>setView("services")}>View all with drill-down →</button>
+                </div>
                 <table className="tbl">
-                  <thead><tr><th>Service</th><th>Subscriptions</th><th className="r">Cost</th><th className="r">Share</th><th>Distribution</th></tr></thead>
+                  <thead><tr><th>Service</th><th className="r">Cost</th><th className="r">% Share</th><th>Distribution</th><th className="r">Subscriptions</th></tr></thead>
                   <tbody>
-                    {processed.services.slice(0, 10).map((s, i) => (
-                      <tr key={s.name}>
-                        <td><span className="svc-dot" style={{ background: processed.colorMap[s.name] }} /><strong>{s.name}</strong></td>
-                        <td>{Object.keys(s.subs).length} sub{Object.keys(s.subs).length !== 1 ? "s" : ""}</td>
-                        <td className="r mono">{fmt(s.total, 2)}</td>
-                        <td className="r mono">{((s.total / grandTotal) * 100).toFixed(1)}%</td>
-                        <td><MiniBar value={s.total} max={processed.services[0]?.total || 1} color={processed.colorMap[s.name]} /></td>
+                    {P.services.slice(0,12).map((s,i) => (
+                      <tr key={s.name} className="clickable" onClick={()=>{setView("services");setTimeout(()=>setExpandedSvc({[s.name]:true}),100);}}>
+                        <td><span className="dot" style={{background:P.colorMap[s.name]}}/><strong>{s.name}</strong></td>
+                        <td className="r mono strong">{fmt(s.total,2)}</td>
+                        <td className="r mono">{P.grandTotal?(s.total/P.grandTotal*100).toFixed(2):0}%</td>
+                        <td><Bar pct={P.services[0]?s.total/P.services[0].total*100:0} color={P.colorMap[s.name]}/></td>
+                        <td className="r">{Object.keys(s.subs).length}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -495,201 +407,269 @@ export default function App() {
             </>
           )}
 
-          {/* ── BY SERVICE ── */}
-          {activeView === "Services" && processed && (
+          {/* ═══════════════════════════════ BY SERVICE ══════════════════════════════ */}
+          {view==="services" && (
             <div className="panel">
-              <div className="panel-hdr">
-                <span className="panel-ttl">Cost by Service — Drill Down</span>
-                <span className="panel-sub">{filteredServices.length} services</span>
-              </div>
+              <div className="phdr"><span className="ptitle">Cost by Service — Click to Expand</span><span className="psub">{P.services.length} services · {fmt(P.grandTotal)}</span></div>
               <table className="tbl">
                 <thead>
                   <tr>
-                    <th style={{ width: 32 }} />
+                    <th style={{width:28}}/>
                     <th>Service</th>
-                    <th className="r">Cost</th>
-                    <th className="r">% Total</th>
-                    <th>Distribution</th>
-                    <th className="r">Resource Groups</th>
+                    <th className="r">Total Cost</th>
+                    <th className="r">% of Total</th>
+                    <th>Share</th>
+                    <th className="r">RGs</th>
                     <th className="r">Resources</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredServices.map((s, i) => (
-                    <>
-                      <tr key={s.name} className={`svc-row ${expandedServices[s.name] ? "expanded" : ""}`}
-                        onClick={() => setExpandedServices(p => ({ ...p, [s.name]: !p[s.name] }))}>
-                        <td><span className="expand-btn">{expandedServices[s.name] ? "▾" : "▸"}</span></td>
-                        <td>
-                          <div className="svc-name-cell">
-                            <span className="svc-dot" style={{ background: processed.colorMap[s.name] }} />
-                            <strong>{s.name}</strong>
-                          </div>
-                        </td>
-                        <td className="r mono cost-hi">{fmt(s.total, 2)}</td>
-                        <td className="r mono">{((s.total / grandTotal) * 100).toFixed(2)}%</td>
-                        <td><MiniBar value={s.total} max={filteredServices[0]?.total || 1} color={processed.colorMap[s.name]} /></td>
-                        <td className="r">{Object.keys(s.rgs).length}</td>
-                        <td className="r">{s.resources.length}</td>
-                      </tr>
-                      {expandedServices[s.name] && (
-                        <>
-                          {/* Sub breakdown */}
-                          <tr className="drill-header">
-                            <td /><td colSpan={6}><span className="drill-label">By Subscription</span></td>
-                          </tr>
-                          {Object.entries(s.subs).sort((a, b) => b[1] - a[1]).map(([sub, cost]) => (
-                            <tr key={sub} className="drill-sub-row">
-                              <td /><td style={{ paddingLeft: 28 }}><span className="drill-arrow">↳</span>{sub}</td>
-                              <td className="r mono">{fmt(cost, 2)}</td>
-                              <td className="r mono muted">{((cost / s.total) * 100).toFixed(1)}%</td>
-                              <td><MiniBar value={cost} max={s.total} color={processed.colorMap[s.name] + "88"} /></td>
-                              <td /><td />
+                  {P.services.map(s => {
+                    const exp = expandedSvc[s.name];
+                    return (
+                      <>
+                        <tr key={s.name} className={`svc-row${exp?" exp":""}`}
+                          onClick={()=>setExpandedSvc(p=>({...p,[s.name]:!p[s.name]}))}>
+                          <td className="exp-td">{exp?"▾":"▸"}</td>
+                          <td><span className="dot" style={{background:P.colorMap[s.name]}}/><strong>{s.name}</strong></td>
+                          <td className="r mono strong">{fmt(s.total,2)}</td>
+                          <td className="r mono">{P.grandTotal?(s.total/P.grandTotal*100).toFixed(2):0}%</td>
+                          <td><Bar pct={P.services[0]?s.total/P.services[0].total*100:0} color={P.colorMap[s.name]}/></td>
+                          <td className="r">{Object.keys(s.rgs).length}</td>
+                          <td className="r">{s.resources.length}</td>
+                        </tr>
+                        {exp && <>
+                          {/* By Subscription */}
+                          <tr className="drill-hdr"><td/><td colSpan={6}><span className="dlbl">📋 By Subscription</span></td></tr>
+                          {Object.entries(s.subs).sort((a,b)=>b[1]-a[1]).map(([sub,cost])=>(
+                            <tr key={"sub_"+sub} className="drill-sub">
+                              <td/>
+                              <td style={{paddingLeft:30}}><span className="darrow">↳</span><span className="sub-pill">{sub}</span></td>
+                              <td className="r mono">{fmt(cost,2)}</td>
+                              <td className="r mono dim">{s.total?(cost/s.total*100).toFixed(1):0}%</td>
+                              <td><Bar pct={s.total?cost/s.total*100:0} color={P.colorMap[s.name]+"99"}/></td>
+                              <td/><td/>
                             </tr>
                           ))}
-                          {/* RG breakdown */}
-                          <tr className="drill-header">
-                            <td /><td colSpan={6}><span className="drill-label">By Resource Group</span></td>
-                          </tr>
-                          {Object.entries(s.rgs).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([rg, cost]) => (
-                            <tr key={rg} className="drill-rg-row">
-                              <td /><td style={{ paddingLeft: 28 }}><span className="drill-arrow">↳</span><span className="rg-tag">{rg}</span></td>
-                              <td className="r mono">{fmt(cost, 2)}</td>
-                              <td className="r mono muted">{((cost / s.total) * 100).toFixed(1)}%</td>
-                              <td><MiniBar value={cost} max={s.total} color={processed.colorMap[s.name] + "66"} /></td>
-                              <td /><td />
-                            </tr>
-                          ))}
-                        </>
-                      )}
-                    </>
-                  ))}
+                          {/* By Resource Group */}
+                          <tr className="drill-hdr"><td/><td colSpan={6}><span className="dlbl">📁 By Resource Group</span></td></tr>
+                          {Object.entries(s.rgs).sort((a,b)=>b[1]-a[1]).slice(0,20).map(([rg,cost])=>{
+                            const rgKey = s.name+"::"+rg;
+                            const rgExp = expandedRg[rgKey];
+                            const rgResources = s.resources.filter(r=>(r.rg||"(no resource group)")===rg);
+                            return (
+                              <>
+                                <tr key={"rg_"+rg} className={`drill-rg${rgExp?" exp":""}`}
+                                  onClick={e=>{e.stopPropagation();setExpandedRg(p=>({...p,[rgKey]:!p[rgKey]}));}}>
+                                  <td/>
+                                  <td style={{paddingLeft:30}}>
+                                    <span className="darrow">{rgExp?"▾":"▸"}</span>
+                                    <span className="rg-tag">{rg}</span>
+                                  </td>
+                                  <td className="r mono">{fmt(cost,2)}</td>
+                                  <td className="r mono dim">{s.total?(cost/s.total*100).toFixed(1):0}%</td>
+                                  <td><Bar pct={s.total?cost/s.total*100:0} color={P.colorMap[s.name]+"77"}/></td>
+                                  <td/><td className="r dim">{rgResources.length}</td>
+                                </tr>
+                                {rgExp && rgResources.sort((a,b)=>b.cost-a.cost).map((r,ri)=>(
+                                  <tr key={"res_"+ri} className="drill-res">
+                                    <td/>
+                                    <td style={{paddingLeft:52}}>
+                                      <span className="darrow">↳</span>
+                                      <span className="res-name">{r.resourceId?.split("/").pop() || r.resourceName || r.resourceId || "—"}</span>
+                                      {r.resourceType && <span className="res-type">{r.resourceType.split("/").pop()}</span>}
+                                    </td>
+                                    <td className="r mono">{fmt(r.cost,4)}</td>
+                                    <td className="r mono dim">{s.total?(r.cost/s.total*100).toFixed(2):0}%</td>
+                                    <td/>
+                                    <td className="r dim" style={{fontSize:10}}>{r.sub}</td>
+                                    <td/>
+                                  </tr>
+                                ))}
+                              </>
+                            );
+                          })}
+                        </>}
+                      </>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
 
-          {/* ── APP SERVICES ── */}
-          {activeView === "AppServices" && processed && (
+          {/* ═══════════════════════════════ APP SERVICES ════════════════════════════ */}
+          {view==="appsvcs" && (
             <>
-              <div className="kpi-row">
-                <div className="kpi-card accent-blue">
-                  <div className="kpi-label">App Service Total</div>
-                  <div className="kpi-val">{fmt(processed.appServices.reduce((s, r) => s + r.cost, 0))}</div>
-                  <div className="kpi-sub">{((processed.appServices.reduce((s, r) => s + r.cost, 0) / grandTotal) * 100).toFixed(1)}% of total spend</div>
+              <div className="kpis">
+                <div className="kpi blue">
+                  <div className="kpi-lbl">App Service Total</div>
+                  <div className="kpi-val">{fmt(P.appSvcTotal)}</div>
+                  <div className="kpi-sub">{P.grandTotal?(P.appSvcTotal/P.grandTotal*100).toFixed(1):0}% of all spend</div>
                 </div>
-                <div className="kpi-card accent-purple">
-                  <div className="kpi-label">App Service Resources</div>
-                  <div className="kpi-val">{processed.appServices.length}</div>
-                  <div className="kpi-sub">Across {new Set(processed.appServices.map(r => r.sub)).size} subscriptions</div>
+                <div className="kpi purple">
+                  <div className="kpi-lbl">Resource Groups</div>
+                  <div className="kpi-val">{P.appSvcGroups.length}</div>
+                  <div className="kpi-sub">With App Service resources</div>
                 </div>
-                <div className="kpi-card accent-green">
-                  <div className="kpi-label">Resource Groups</div>
-                  <div className="kpi-val">{new Set(processed.appServices.map(r => r.rg)).size}</div>
-                  <div className="kpi-sub">Containing App Services</div>
+                <div className="kpi green">
+                  <div className="kpi-lbl">Total Resources</div>
+                  <div className="kpi-val">{P.appSvcRows.length}</div>
+                  <div className="kpi-sub">Web apps, plans, slots</div>
+                </div>
+                <div className="kpi amber">
+                  <div className="kpi-lbl">Subscriptions</div>
+                  <div className="kpi-val">{new Set(P.appSvcRows.map(r=>r.subId)).size}</div>
+                  <div className="kpi-sub">With App Services</div>
                 </div>
               </div>
-              <div className="panel">
-                <div className="panel-hdr"><span className="panel-ttl">App Services — Full Cost Drill Down</span></div>
-                {processed.appServices.length === 0 ? (
-                  <div className="empty-state-lg">
-                    <div>No App Service costs found for this period.</div>
-                    <div className="muted">Try expanding the date range or check that the AzureReader app has Reader access on all subscriptions.</div>
+
+              {P.appSvcRows.length === 0 ? (
+                <div className="panel">
+                  <div className="empty-lg">
+                    <div className="empty-icon">⬢</div>
+                    <div className="empty-title">No App Service costs found</div>
+                    <div className="empty-sub">This could mean: no App Services exist in this period, or costs appear under a different service name. Check the "By Service" view and look for "App Service", "Web Apps", or "Azure App Service".</div>
+                    <button className="btn-primary" onClick={()=>setView("services")}>View all services →</button>
                   </div>
-                ) : (
+                </div>
+              ) : (
+                <div className="panel">
+                  <div className="phdr">
+                    <span className="ptitle">App Services — Grouped by Resource Group</span>
+                    <span className="psub">Click to expand individual resources</span>
+                  </div>
                   <table className="tbl">
                     <thead>
                       <tr>
-                        <th style={{ width: 32 }} />
-                        <th>Resource / App</th>
+                        <th style={{width:28}}/>
+                        <th>Resource Group / Resource</th>
                         <th>Subscription</th>
-                        <th>Resource Group</th>
                         <th>Type</th>
                         <th className="r">Cost</th>
-                        <th className="r">% of AS Total</th>
+                        <th className="r">% of AS</th>
+                        <th>Share</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(() => {
-                        const asTotal = processed.appServices.reduce((s, r) => s + r.cost, 0);
-                        const byRg = {};
-                        processed.appServices.forEach(r => {
-                          const key = `${r.subId}::${r.rg}`;
-                          if (!byRg[key]) byRg[key] = { sub: r.sub, rg: r.rg, total: 0, items: [] };
-                          byRg[key].total += r.cost;
-                          byRg[key].items.push(r);
-                        });
-                        return Object.entries(byRg).sort((a, b) => b[1].total - a[1].total).flatMap(([key, group]) => {
-                          const isExp = expandedRows[key];
-                          return [
-                            <tr key={key} className={`rg-group-row ${isExp ? "expanded" : ""}`}
-                              onClick={() => setExpandedRows(p => ({ ...p, [key]: !p[key] }))}>
-                              <td><span className="expand-btn">{isExp ? "▾" : "▸"}</span></td>
-                              <td colSpan={3}>
-                                <span className="rg-tag">{group.rg}</span>
-                                <span className="sub-badge">{group.sub}</span>
-                              </td>
-                              <td><Pill label="Resource Group" color="#60a5fa" /></td>
-                              <td className="r mono cost-hi">{fmt(group.total, 2)}</td>
-                              <td className="r mono">{((group.total / asTotal) * 100).toFixed(1)}%</td>
-                            </tr>,
-                            ...(isExp ? group.items.sort((a, b) => b.cost - a.cost).map((r, ri) => (
-                              <tr key={ri} className="resource-row">
-                                <td />
-                                <td style={{ paddingLeft: 24 }}>
-                                  <span className="drill-arrow">↳</span>
-                                  <span className="res-name">{r.resourceId?.split("/").pop() || r.resourceId || "—"}</span>
-                                </td>
-                                <td className="muted">{r.sub}</td>
-                                <td className="muted">{r.rg}</td>
-                                <td><span className="type-tag">{r.resourceType?.split("/").pop() || r.service}</span></td>
-                                <td className="r mono">{fmt(r.cost, 2)}</td>
-                                <td className="r mono muted">{((r.cost / asTotal) * 100).toFixed(2)}%</td>
-                              </tr>
-                            )) : [])
-                          ];
-                        });
-                      })()}
+                      {P.appSvcGroups.map(group => {
+                        const key = group.subId+"::"+group.rg;
+                        const exp = expandedRg[key];
+                        return (
+                          <>
+                            <tr key={key} className={`rg-row${exp?" exp":""}`}
+                              onClick={()=>setExpandedRg(p=>({...p,[key]:!p[key]}))}>
+                              <td className="exp-td">{exp?"▾":"▸"}</td>
+                              <td><span className="rg-tag">{group.rg}</span></td>
+                              <td><span className="sub-pill">{group.sub}</span></td>
+                              <td><span className="type-pill">Resource Group</span></td>
+                              <td className="r mono strong">{fmt(group.total,2)}</td>
+                              <td className="r mono">{P.appSvcTotal?(group.total/P.appSvcTotal*100).toFixed(1):0}%</td>
+                              <td><Bar pct={P.appSvcGroups[0]?group.total/P.appSvcGroups[0].total*100:0} color="#60a5fa"/></td>
+                            </tr>
+                            {exp && group.resources.sort((a,b)=>b.cost-a.cost).map((r,ri)=>{
+                              const name = r.resourceId?.split("/").pop() || r.resourceName || r.resourceId || "Unknown resource";
+                              const type = r.resourceType?.split("/").pop() || r.service;
+                              return (
+                                <tr key={"as_"+ri} className="drill-res">
+                                  <td/>
+                                  <td style={{paddingLeft:26}}>
+                                    <span className="darrow">↳</span>
+                                    <span className="res-name">{name}</span>
+                                  </td>
+                                  <td className="dim">{r.sub}</td>
+                                  <td><span className="type-pill">{type}</span></td>
+                                  <td className="r mono">{fmt(r.cost,4)}</td>
+                                  <td className="r mono dim">{P.appSvcTotal?(r.cost/P.appSvcTotal*100).toFixed(2):0}%</td>
+                                  <td><Bar pct={group.total?r.cost/group.total*100:0} color="#a78bfa"/></td>
+                                </tr>
+                              );
+                            })}
+                          </>
+                        );
+                      })}
                     </tbody>
                   </table>
-                )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ═══════════════════════════════ SUBSCRIPTIONS ═══════════════════════════ */}
+          {view==="subs" && (
+            <>
+              <div className="panel">
+                <div className="phdr"><span className="ptitle">All Subscriptions — Click to drill in</span></div>
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>Subscription</th>
+                      <th className="r">Total Cost</th>
+                      <th className="r">App Services</th>
+                      <th className="r">% of Total</th>
+                      <th>Distribution</th>
+                      <th className="r">Top Service</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {P.subs.map((s,i) => {
+                      const topSvc = Object.entries(s.services).sort((a,b)=>b[1]-a[1])[0];
+                      return (
+                        <tr key={s.id} className="clickable"
+                          onClick={()=>{ setSelectedSubId(s.id); setView("services"); }}>
+                          <td>
+                            <span className="dot" style={{background:COLORS[i%COLORS.length]}}/>
+                            <strong>{s.name}</strong>
+                            <div className="sub-id">{s.id?.slice(0,8)}…</div>
+                          </td>
+                          <td className="r mono strong">{fmt(s.total,2)}</td>
+                          <td className="r mono">{fmt(s.appSvcTotal,2)}</td>
+                          <td className="r mono">{P.grandTotal?(s.total/P.grandTotal*100).toFixed(1):0}%</td>
+                          <td><Bar pct={P.subs[0]?s.total/P.subs[0].total*100:0} color={COLORS[i%COLORS.length]}/></td>
+                          <td className="r dim" style={{fontSize:11}}>{topSvc?`${topSvc[0].replace("Azure ","")} (${fmt(topSvc[1])})`:""}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Sub detail cards */}
+              <div className="sub-grid">
+                {P.subs.map((s,i)=>(
+                  <div key={s.id} className="sub-card" onClick={()=>{setSelectedSubId(s.id);setView("services");}}>
+                    <div className="sc-stripe" style={{background:COLORS[i%COLORS.length]}}/>
+                    <div className="sc-top">
+                      <div className="sc-name">{s.name}</div>
+                      <div className="sc-cost">{fmt(s.total)}</div>
+                    </div>
+                    <div className="sc-id">{s.id}</div>
+                    <Bar pct={P.subs[0]?s.total/P.subs[0].total*100:0} color={COLORS[i%COLORS.length]}/>
+                    <div className="sc-appsvcs">
+                      <span>App Services:</span><strong>{fmt(s.appSvcTotal)}</strong>
+                    </div>
+                    <div className="sc-services">
+                      {Object.entries(s.services).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([svc,cost])=>(
+                        <div key={svc} className="sc-svc">
+                          <span className="sc-dot" style={{background:P.colorMap[svc]||"#60a5fa"}}/>
+                          <span className="sc-svc-name">{svc.replace("Azure ","")}</span>
+                          <span className="sc-svc-cost">{fmt(cost)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="sc-cta">Click to drill into services →</div>
+                  </div>
+                ))}
               </div>
             </>
           )}
 
-          {/* ── SUBSCRIPTIONS ── */}
-          {activeView === "Subscriptions" && processed && (
-            <div className="sub-grid">
-              {processed.subs.map((sub, i) => (
-                <div key={sub.id} className="sub-card">
-                  <div className="sc-accent" style={{ background: COLORS[i % COLORS.length] }} />
-                  <div className="sc-head">
-                    <div><div className="sc-name">{sub.name}</div><div className="sc-id">{sub.id?.slice(0, 8)}…</div></div>
-                    <div className="sc-cost">{fmt(sub.total)}</div>
-                  </div>
-                  <MiniBar value={sub.total} max={processed.subs[0]?.total || 1} color={COLORS[i % COLORS.length]} />
-                  <div className="sc-share">{((sub.total / grandTotal) * 100).toFixed(1)}% of total</div>
-                  <div className="sc-services">
-                    {Object.entries(sub.services).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([svc, cost]) => (
-                      <div key={svc} className="sc-svc">
-                        <span className="sc-svc-dot" style={{ background: processed.colorMap[svc] }} />
-                        <span className="sc-svc-name">{svc.replace("Azure ", "").replace("Microsoft ", "")}</span>
-                        <span className="sc-svc-cost">{fmt(cost)}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <Sparkline values={Object.values(sub.services)} color={COLORS[i % COLORS.length]} w={200} h={30} />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── FULL BREAKDOWN ── */}
-          {activeView === "Breakdown" && (
+          {/* ═══════════════════════════════ BREAKDOWN ═══════════════════════════════ */}
+          {view==="breakdown" && (
             <div className="panel">
-              <div className="panel-hdr">
-                <span className="panel-ttl">Full Cost Breakdown — All Resources</span>
-                <span className="panel-sub">{filteredRows.length} line items</span>
+              <div className="phdr">
+                <span className="ptitle">Full Cost Breakdown — Every Line Item</span>
+                <span className="psub">{P.rows.length} records · {fmt(P.grandTotal)}</span>
               </div>
               <table className="tbl">
                 <thead>
@@ -703,19 +683,17 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.slice(0, 500).map((r, i) => (
+                  {P.rows.sort((a,b)=>sortDir==="desc"?b.cost-a.cost:a.cost-b.cost).slice(0,1000).map((r,i)=>(
                     <tr key={i}>
-                      <td><span className="svc-dot" style={{ background: processed?.colorMap[r.service] || "#60a5fa" }} />{r.service}</td>
-                      <td className="muted">{r.sub}</td>
-                      <td><span className="rg-tag-sm">{r.rg}</span></td>
-                      <td className="muted res-id">{r.resourceId?.split("/").pop() || "—"}</td>
-                      <td className="muted">{r.resourceType?.split("/").pop() || "—"}</td>
-                      <td className="r mono cost-hi">{fmt(r.cost, 4)}</td>
+                      <td><span className="dot" style={{background:P.colorMap[r.service]||"#60a5fa"}}/>{r.service}</td>
+                      <td className="dim">{r.sub}</td>
+                      <td><span className="rg-tag-sm">{r.rg||"—"}</span></td>
+                      <td className="mono-sm">{r.resourceId?.split("/").pop()||r.resourceName||"—"}</td>
+                      <td className="dim" style={{fontSize:11}}>{r.resourceType?.split("/").pop()||"—"}</td>
+                      <td className="r mono strong">{fmt(r.cost,4)}</td>
                     </tr>
                   ))}
-                  {filteredRows.length > 500 && (
-                    <tr><td colSpan={6} className="muted" style={{ textAlign: "center", padding: "12px" }}>Showing 500 of {filteredRows.length} rows. Use filters to narrow results.</td></tr>
-                  )}
+                  {P.rows.length>1000&&<tr><td colSpan={6} className="dim" style={{textAlign:"center",padding:12}}>Showing 1,000 of {P.rows.length} rows — use search to narrow</td></tr>}
                 </tbody>
               </table>
             </div>
