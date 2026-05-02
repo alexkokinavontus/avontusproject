@@ -106,3 +106,7 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 .err-card div:first-child{font-size:28px}.err-card h3{font-family:'Syne',sans-serif;font-size:16px;font-weight:700}
 .err-msg{font-family:'DM Mono',monospace;font-size:11px;color:var(--red);word-break:break-all;line-height:1.6}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--b2);border-radius:3px}
+.sp-progress{display:flex;flex-direction:column;align-items:center;gap:6px;width:260px}
+.sp-prog-bar{width:100%;height:4px;background:var(--bg4);border-radius:2px;overflow:hidden}
+.sp-prog-fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--purple));border-radius:2px;transition:width .3s}
+.sp-prog-lbl{font-size:10px;color:var(--t3);font-family:'DM Mono',monospace}
