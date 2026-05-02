@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { fetchAllData } from "./api/azure";
+import { fetchAllData, parseAzureDate } from "./api/azure";
 
 const BUDGET = 155000;
 const COLORS = ["#60a5fa","#a78bfa","#34d399","#fb923c","#f87171","#2dd4bf","#facc15","#e879f9","#4ade80","#f59e0b","#818cf8","#38bdf8"];
@@ -7,15 +7,6 @@ const fmt = (n, d = 0) => !n ? "$0" : "$" + Number(n).toLocaleString("en-US", { 
 const fmtD = s => new Date(s + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
 // Parse date from Azure — handles 20260401 (number) or "2026-04-01" (string)
-function parseAzureDate(raw) {
-  const s = String(raw || "");
-  if (!s || s === "null") return null;
-  // Numeric like 20260401
-  if (/^\d{8}$/.test(s)) return `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
-  // Already ISO-ish
-  if (s.includes("-")) return s.slice(0,10);
-  return null;
-}
 
 const AS_TYPES = ["microsoft.web/sites","microsoft.web/serverfarms","microsoft.web/hostingenvironments","microsoft.web/staticsites"];
 const AS_SVCS  = ["azure app service","app service","web apps","app service plan"];
@@ -102,11 +93,15 @@ export default function App() {
   const [expRg, setExpRg] = useState({});
   const [search, setSearch] = useState("");
   const [sortDesc, setSortDesc] = useState(true);
+  const [progress, setProgress] = useState({ current: 0, total: 0, name: '' });
 
   const load = useCallback(async (range) => {
     setLoading(true); setError(null); setExpSvc({}); setExpRg({});
+    setProgress({ current: 0, total: 0, name: 'Connecting...' });
     try {
-      const r = await fetchAllData(range.start, range.end);
+      const r = await fetchAllData(range.start, range.end, (i, total, name) => {
+        setProgress({ current: i + 1, total, name });
+      });
       setData(r);
       setRefreshedAt(new Date());
     } catch(e) { setError(e.message); }
@@ -210,6 +205,12 @@ export default function App() {
       <div className="sp-wrap"><div className="sp-ring"/><div className="sp-logo">A</div></div>
       <div className="sp-title">Loading Azure Cost Data</div>
       <div className="sp-sub">{fmtD(dates.start)} → {fmtD(dates.end)}</div>
+      {progress.total > 0 && (
+        <div className="sp-progress">
+          <div className="sp-prog-bar"><div className="sp-prog-fill" style={{width:`${(progress.current/progress.total)*100}%`}}/></div>
+          <div className="sp-prog-lbl">{progress.current}/{progress.total} — {progress.name}</div>
+        </div>
+      )}
     </div>
   );
 
