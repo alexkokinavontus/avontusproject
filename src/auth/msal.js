@@ -9,7 +9,9 @@ const MSAL_CONFIG = {
   cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
 };
 
-const LOGIN_SCOPES = { scopes: ["User.Read", "openid", "profile", "email"] };
+const MGMT_SCOPES   = { scopes: ["https://management.azure.com/user_impersonation"] };
+const LOGIN_SCOPES  = { scopes: ["User.Read", "openid", "profile", "email", "https://management.azure.com/user_impersonation"] };
+
 let msalInstance = null;
 
 async function getMsal() {
@@ -65,4 +67,22 @@ export async function signOut() {
   const account = msal.getActiveAccount() || msal.getAllAccounts()[0];
   if (account) await msal.logoutPopup({ account });
   else window.location.reload();
+}
+
+// Get user's delegated access token for Azure Management APIs
+// This token carries the user's billing permissions
+export async function getUserMgmtToken() {
+  try {
+    const msal = await getMsal();
+    const account = msal.getActiveAccount() || msal.getAllAccounts()[0];
+    if (!account) return null;
+    const result = await msal.acquireTokenSilent({ ...MGMT_SCOPES, account });
+    return result.accessToken;
+  } catch (e) {
+    try {
+      const msal = await getMsal();
+      const result = await msal.acquireTokenPopup(MGMT_SCOPES);
+      return result.accessToken;
+    } catch { return null; }
+  }
 }
