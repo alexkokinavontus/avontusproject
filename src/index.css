@@ -192,3 +192,27 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 .inv-dl-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.25);border-radius:5px;color:var(--blue);font-size:11px;font-weight:600;text-decoration:none;transition:all .12s;white-space:nowrap}
 .inv-dl-btn:hover{background:rgba(96,165,250,.2);border-color:rgba(96,165,250,.4)}
 [data-theme="light"] .inv-dl-btn{background:rgba(29,111,216,.08);border-color:rgba(29,111,216,.2);color:var(--blue)}
+
+/* ── Invoice Modal ── */
+.inv-row{cursor:pointer}
+.inv-row:hover td{background:rgba(96,165,250,.04) !important}
+.inv-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px}
+.inv-modal{background:var(--bg2);border:1px solid var(--b2);border-radius:14px;width:100%;max-width:780px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.4)}
+.inv-modal-hdr{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 24px;border-bottom:1px solid var(--b2);flex-shrink:0;gap:12px}
+.inv-modal-title{font-family:'Syne',sans-serif;font-weight:700;font-size:18px;color:var(--text)}
+.inv-modal-sub{font-size:11px;color:var(--t3);font-family:'DM Mono',monospace;margin-top:3px}
+.inv-modal-body{overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px}
+.inv-summary-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.inv-sc{background:var(--bg3);border:1px solid var(--b2);border-radius:9px;padding:12px 14px;position:relative;overflow:hidden}
+.inv-sc::before{content:"";position:absolute;top:0;left:0;width:3px;height:100%}
+.inv-sc.blue::before{background:var(--blue)}.inv-sc.green::before{background:var(--green)}.inv-sc.amber::before{background:var(--amber)}
+.inv-sc[style]::before{background:var(--ac,var(--blue))}
+.inv-sc-l{font-size:9px;color:var(--t3);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+.inv-sc-v{font-family:'DM Mono',monospace;font-size:18px;font-weight:500;color:var(--text)}
+.inv-sc-s{font-size:10px;color:var(--t3);margin-top:2px}
+.inv-section{display:flex;flex-direction:column;gap:8px}
+.inv-section-title{font-family:'Syne',sans-serif;font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.06em}
+
+/* Light theme invoice modal */
+[data-theme="light"] .inv-modal{box-shadow:0 24px 64px rgba(0,0,0,.15)}
+[data-theme="light"] .inv-modal-overlay{background:rgba(0,0,0,.3)}
