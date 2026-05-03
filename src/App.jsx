@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { fetchAllData, parseAzureDate, TENANTS } from "./api/azure";
+import { fetchAllData, parseAzureDate, TENANTS, fetchAllInvoices } from "./api/azure";
 import { getStoredUser, signIn, signOut } from "./auth/msal";
 
 const BUDGET_TOTAL = 155000;
@@ -85,6 +85,10 @@ export default function App(){
   const [search,setSearch]=useState("");
   const [sortDesc,setSortDesc]=useState(true);
   const [progress,setProgress]=useState({i:0,total:0,name:""});
+  const [invoices,setInvoices]=useState(null);
+  const [invoicesLoading,setInvoicesLoading]=useState(false);
+  const [invoiceFilter,setInvoiceFilter]=useState("all");
+  const [invoiceSearch,setInvoiceSearch]=useState("");
   const [theme,setTheme]=useState(()=>localStorage.getItem("azr-theme")||"dark");
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
@@ -123,6 +127,20 @@ export default function App(){
   useEffect(()=>{load(initD);},[]);
 
   const applyPreset=p=>{const r=p.fn();setPreset(p.label);setDates(r);load(r);};
+
+  const loadInvoices=useCallback(async()=>{
+    if(!data)return;
+    setInvoicesLoading(true);
+    try{
+      const invs=await fetchAllInvoices(data.subscriptions, TENANTS);
+      setInvoices(invs);
+    }catch(e){console.error('Invoice load failed:',e);}
+    finally{setInvoicesLoading(false);}
+  },[data]);
+
+  useEffect(()=>{
+    if(view==="invoices"&&data&&!invoices&&!invoicesLoading)loadInvoices();
+  },[view,data]);
   const applyDate=(k,v)=>{const r={...dates,[k]:v};setPreset(null);setDates(r);load(r);};
 
   // ── Process ──────────────────────────────────────────────────────────────
@@ -282,7 +300,7 @@ export default function App(){
           <div><div className="sb-name">AzureReader</div><div className="sb-ten">4 tenants · 14 subs</div></div>
         </div>
         <nav className="sb-nav">
-          {[{id:"overview",ico:"▣",lbl:"Overview"},{id:"tenants",ico:"◈",lbl:"Tenants"},{id:"services",ico:"⬡",lbl:"By Service"},{id:"appsvcs",ico:"⬢",lbl:"App Services"},{id:"subs",ico:"≡",lbl:"Subscriptions"},{id:"breakdown",ico:"⊞",lbl:"Full Breakdown"}].map(v=>(
+          {[{id:"overview",ico:"▣",lbl:"Overview"},{id:"tenants",ico:"◈",lbl:"Tenants"},{id:"services",ico:"⬡",lbl:"By Service"},{id:"appsvcs",ico:"⬢",lbl:"App Services"},{id:"subs",ico:"≡",lbl:"Subscriptions"},{id:"breakdown",ico:"⊞",lbl:"Full Breakdown"},{id:"invoices",ico:"🧾",lbl:"Invoices"}].map(v=>(
             <button key={v.id} className={`sb-item${view===v.id?" on":""}`} onClick={()=>setView(v.id)}>
               <span className="sb-ico">{v.ico}</span>{v.lbl}
             </button>
@@ -664,6 +682,118 @@ export default function App(){
                 </tbody>
               </table>
             </div>
+          )}
+
+          {/* ═══ INVOICES ═══ */}
+          {view==="invoices"&&(
+            <>
+              {invoicesLoading&&(
+                <div className="inv-loading">
+                  <div className="sp-wrap" style={{width:40,height:40}}><div className="sp-ring"/><div className="sp-logo" style={{width:26,height:26,fontSize:13}}>A</div></div>
+                  <div>Fetching invoices across all tenants…</div>
+                </div>
+              )}
+              {!invoicesLoading&&invoices&&(
+                <>
+                  <div className="inv-toolbar">
+                    <div className="inv-stats">
+                      <div className="inv-stat"><span>Total invoices</span><strong>{invoices.length}</strong></div>
+                      <div className="inv-stat"><span>Total billed</span><strong>{fmt(invoices.reduce((s,i)=>s+i.amount,0),2)}</strong></div>
+                      <div className="inv-stat"><span>Outstanding</span><strong style={{color:"var(--red)"}}>{fmt(invoices.filter(i=>i.status==="Due"||i.status==="PastDue").reduce((s,i)=>s+i.amount,0),2)}</strong></div>
+                      <div className="inv-stat"><span>Paid</span><strong style={{color:"var(--green)"}}>{fmt(invoices.filter(i=>i.status==="Paid").reduce((s,i)=>s+i.amount,0),2)}</strong></div>
+                    </div>
+                    <div className="inv-filters">
+                      <input className="si-in" placeholder="Search invoices…" value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} style={{maxWidth:200}}/>
+                      {["all","Paid","Due","PastDue","Void"].map(f=>(
+                        <button key={f} className={`ps${invoiceFilter===f?" on":""}`} onClick={()=>setInvoiceFilter(f)}>
+                          {f==="all"?"All":f}
+                        </button>
+                      ))}
+                      <button className="rb" onClick={loadInvoices} title="Refresh invoices">↻</button>
+                    </div>
+                  </div>
+
+                  {invoices.length===0?(
+                    <div className="panel">
+                      <div className="empty-lg">
+                        <div style={{fontSize:32}}>🧾</div>
+                        <div style={{fontFamily:"'Syne',sans-serif",fontSize:16,fontWeight:700}}>No invoices found</div>
+                        <div style={{fontSize:12,color:"var(--t3)",maxWidth:400,lineHeight:1.6}}>
+                          Invoices require a billing account with the AzureReader app assigned the <strong>Billing Account Reader</strong> role, or the subscription must be on a Microsoft Customer Agreement.
+                        </div>
+                        <div style={{fontSize:11,color:"var(--t3)",fontFamily:"'DM Mono',monospace",marginTop:4}}>
+                          Run in Cloud Shell:<br/>
+                          az role assignment create --assignee 3977e66a --role "Billing Account Reader"
+                        </div>
+                      </div>
+                    </div>
+                  ):(
+                    <div className="panel">
+                      <div className="phdr">
+                        <span className="pt">Invoices — All Tenants</span>
+                        <span className="ps">{invoices.filter(i=>(invoiceFilter==="all"||i.status===invoiceFilter)&&(!invoiceSearch||i.name?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.subName?.toLowerCase().includes(invoiceSearch.toLowerCase()))).length} invoices</span>
+                      </div>
+                      <table className="tbl">
+                        <thead>
+                          <tr>
+                            <th>Invoice</th>
+                            <th>Tenant</th>
+                            <th>Subscription / Profile</th>
+                            <th>Period</th>
+                            <th>Due Date</th>
+                            <th>Status</th>
+                            <th className="r">Amount</th>
+                            <th className="r">Download</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {invoices
+                            .filter(i=>(invoiceFilter==="all"||i.status===invoiceFilter)&&(!invoiceSearch||i.name?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.subName?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.billingProfileName?.toLowerCase().includes(invoiceSearch.toLowerCase())))
+                            .map((inv,i)=>{
+                              const statusColor=inv.status==="Paid"?"var(--green)":inv.status==="PastDue"?"var(--red)":inv.status==="Due"?"var(--amber)":"var(--t3)";
+                              const period=inv.periodStart&&inv.periodEnd?`${new Date(inv.periodStart+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})} – ${new Date(inv.periodEnd+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})}`:inv.invoiceDate?new Date(inv.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
+                              const due=inv.dueDate?new Date(inv.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
+                              return(
+                                <tr key={i} className={inv.status==="PastDue"?"inv-overdue":""}>
+                                  <td><span className="mono" style={{fontSize:12}}>{inv.name||inv.id}</span></td>
+                                  <td><TenantBadge name={inv.tenant?.split(" ")[0]||"?"} color={inv.tenantColor||"#60a5fa"}/></td>
+                                  <td className="dim">{inv.subName||inv.billingProfileName||"—"}</td>
+                                  <td className="dim" style={{fontSize:11}}>{period}</td>
+                                  <td className="dim" style={{fontSize:11}}>{due}</td>
+                                  <td>
+                                    <span className="inv-status" style={{color:statusColor,background:statusColor+"18",borderColor:statusColor+"33"}}>
+                                      {inv.status==="Paid"?"✓ ":inv.status==="PastDue"?"⚠ ":""}{inv.status}
+                                    </span>
+                                  </td>
+                                  <td className="r mono hi">{fmt(inv.amount,2)} <span className="dim" style={{fontSize:10}}>{inv.currency}</span></td>
+                                  <td className="r">
+                                    {inv.downloadUrl?(
+                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn">
+                                        ↓ PDF
+                                      </a>
+                                    ):(
+                                      <span className="dim" style={{fontSize:11}}>—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+              {!invoicesLoading&&!invoices&&(
+                <div className="panel">
+                  <div className="empty-lg">
+                    <div style={{fontSize:32}}>🧾</div>
+                    <div style={{fontFamily:"'Syne',sans-serif",fontSize:16,fontWeight:700}}>Load Invoices</div>
+                    <button className="lc-btn" onClick={loadInvoices}>Fetch Invoices</button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
