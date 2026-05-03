@@ -1,6 +1,22 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@600;700;800&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#07090f;--bg2:#0d1219;--bg3:#121a27;--bg4:#182031;--bg5:#1e2840;--b1:#ffffff0a;--b2:#ffffff14;--b3:#ffffff20;--text:#dce4f5;--t2:#8898b8;--t3:#44526a;--blue:#60a5fa;--purple:#a78bfa;--green:#34d399;--amber:#f59e0b;--red:#f87171;--sw:236px}
+:root{
+  --blue:#60a5fa;--purple:#a78bfa;--green:#34d399;--amber:#f59e0b;--red:#f87171;
+  --sw:236px;
+}
+/* Dark theme (default) */
+:root,[data-theme="dark"]{
+  --bg:#07090f;--bg2:#0d1219;--bg3:#121a27;--bg4:#182031;--bg5:#1e2840;
+  --b1:#ffffff0a;--b2:#ffffff14;--b3:#ffffff20;
+  --text:#dce4f5;--t2:#8898b8;--t3:#44526a;
+}
+/* Light theme */
+[data-theme="light"]{
+  --bg:#f0f4fa;--bg2:#ffffff;--bg3:#f5f7fc;--bg4:#e8edf8;--bg5:#dce5f5;
+  --b1:#00000008;--b2:#00000012;--b3:#0000001e;
+  --text:#0f1629;--t2:#3d4f72;--t3:#8896b3;
+  --blue:#1d6fd8;--purple:#7c3aed;--green:#059669;--amber:#d97706;--red:#dc2626;
+}
 body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;height:100vh;overflow:hidden}
 .shell{display:flex;height:100vh;overflow:hidden}
 .sidebar{width:var(--sw);background:var(--bg2);border-right:1px solid var(--b2);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
@@ -123,3 +139,40 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 .tc-svcs{display:flex;flex-direction:column;gap:4px;margin-top:8px}
 .tc-svc{display:flex;align-items:center;gap:6px}
 .sdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+
+/* ── Auth / Login ── */
+.login-card{background:var(--bg2);border:1px solid var(--b2);border-radius:16px;padding:40px 36px;max-width:400px;width:90%;text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px}
+.lc-logo{margin-bottom:4px}
+.lc-title{font-family:'Syne',sans-serif;font-weight:800;font-size:24px;color:var(--text)}
+.lc-sub{font-size:13px;color:var(--t2);line-height:1.6;max-width:300px}
+.lc-btn{display:flex;align-items:center;gap:10px;padding:12px 24px;background:#0078d4;border:none;border-radius:8px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;transition:all .15s;margin-top:4px}
+.lc-btn:hover{background:#1a8ce0;transform:translateY(-1px)}
+.lc-hint{font-size:11px;color:var(--t3)}
+.lc-theme{margin-top:4px}
+
+/* ── User menu ── */
+.user-menu{position:relative;display:flex;align-items:center}
+.user-avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#1a65cc,#38bdf8);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:pointer;font-family:'DM Mono',monospace;flex-shrink:0;border:2px solid var(--b2)}
+.user-menu:hover .user-drop{display:flex}
+.user-drop{display:none;position:absolute;right:0;top:calc(100% + 8px);background:var(--bg2);border:1px solid var(--b2);border-radius:10px;padding:12px;min-width:200px;flex-direction:column;gap:6px;z-index:100;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.ud-name{font-size:13px;font-weight:600;color:var(--text)}
+.ud-email{font-size:11px;color:var(--t3);font-family:'DM Mono',monospace;word-break:break-all}
+.ud-signout{margin-top:6px;padding:6px 12px;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.25);border-radius:6px;color:#f87171;font-size:12px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;transition:all .12s;text-align:center}
+.ud-signout:hover{background:rgba(248,113,113,.2)}
+
+/* ── Theme toggle button ── */
+.theme-btn{font-size:13px !important}
+
+/* ── Light theme specific overrides ── */
+[data-theme="light"] .sidebar{box-shadow:2px 0 8px rgba(0,0,0,.06)}
+[data-theme="light"] .panel{box-shadow:0 1px 4px rgba(0,0,0,.06)}
+[data-theme="light"] .kpi{box-shadow:0 1px 4px rgba(0,0,0,.06)}
+[data-theme="light"] .sub-card{box-shadow:0 1px 4px rgba(0,0,0,.06)}
+[data-theme="light"] .tc{box-shadow:0 1px 4px rgba(0,0,0,.06)}
+[data-theme="light"] .tbl th{background:var(--bg3)}
+[data-theme="light"] .svc-row.ex td{background:rgba(29,111,216,.06)}
+[data-theme="light"] .rg-row.ex td{background:rgba(29,111,216,.06)}
+[data-theme="light"] .rgt{background:rgba(29,111,216,.08);border-color:rgba(29,111,216,.2);color:var(--blue)}
+[data-theme="light"] .spill{background:rgba(124,58,237,.08);color:var(--purple)}
+[data-theme="light"] .user-drop{box-shadow:0 8px 24px rgba(0,0,0,.12)}
+[data-theme="light"] body{color-scheme:light}
