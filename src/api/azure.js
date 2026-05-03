@@ -1,28 +1,18 @@
-const BASE = 'https://azurereader-api.azurewebsites.net/api/proxy';
+// Multi-tenant Azure Cost Management API
+// 4 tenants, 14 subscriptions
 
+const BASE = 'https://azurereader-api.azurewebsites.net/api/proxy';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function get(path, apiVersion = '2022-12-01') {
-  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}`);
-  const text = await res.text();
-  if (!text) throw new Error(`Empty response from ${path}`);
-  try { return JSON.parse(text); }
-  catch { throw new Error(`Bad JSON from ${path}: ${text.slice(0,200)}`); }
-}
+const TENANTS = [
+  { name: 'Avontus Software',  id: 'bd98204b-b981-4d03-8796-356d537927eb', color: '#60a5fa' },
+  { name: 'Places2Swim',       id: 'afafd9ca-9af6-4f95-8032-f71fc87ef9e5', color: '#34d399' },
+  { name: 'Azure-Internal',    id: 'd971099d-75b2-4a01-8d0d-507161733ea5', color: '#a78bfa' },
+  { name: 'SmallBiz',          id: '5e9927b8-90dd-40c9-bdb8-3283e73304c6', color: '#f59e0b' },
+];
 
-async function post(path, body, apiVersion = '2023-11-01') {
-  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const text = await res.text();
-  if (!text) throw new Error(`Empty response from ${path}`);
-  try { return JSON.parse(text); }
-  catch { throw new Error(`Bad JSON from ${path}: ${text.slice(0,200)}`); }
-}
+export { TENANTS };
 
-// Parse date from Azure — handles 20260401 (number) or "2026-04-01" (string)
 export function parseAzureDate(raw) {
   const s = String(raw || '');
   if (!s || s === 'null') return null;
@@ -31,110 +21,127 @@ export function parseAzureDate(raw) {
   return null;
 }
 
-// Parse Cost Management response into clean row objects
-// Confirmed column order: [Cost, ServiceName, ResourceGroupName, ResourceType, Currency]
-export function parseRows(resp, sub) {
+export function parseRows(resp, sub, tenant) {
   const props = resp?.properties;
   if (!props) return [];
   const cols = (props.columns || []).map(c => c.name.toLowerCase());
   const rows = props.rows || [];
-
   const ci = name => cols.findIndex(c => c === name.toLowerCase());
   const costI = ci('cost') >= 0 ? ci('cost') : ci('pretaxcost');
   const svcI  = ci('servicename');
   const rgI   = ci('resourcegroupname');
   const rtI   = ci('resourcetype');
-  const ridI  = ci('resourceid');
-  const dateI = ci('billingmonth') >= 0 ? ci('billingmonth') : ci('usagedate') >= 0 ? ci('usagedate') : ci('date');
+  const dateI = ci('billingmonth') >= 0 ? ci('billingmonth') : ci('usagedate') >= 0 ? ci('usagedate') : -1;
 
   return rows.map(r => ({
     cost:         costI >= 0 ? (parseFloat(r[costI]) || 0) : 0,
     service:      svcI  >= 0 ? (r[svcI]  || 'Unknown') : 'Unknown',
     rg:           rgI   >= 0 ? (r[rgI]   || '') : '',
     resourceType: rtI   >= 0 ? (r[rtI]   || '') : '',
-    resourceId:   ridI  >= 0 ? (r[ridI]  || '') : '',
     date:         dateI >= 0 ? String(r[dateI] || '') : '',
     sub:          sub?.displayName || '',
     subId:        sub?.subscriptionId || '',
+    tenant:       tenant?.name || '',
+    tenantId:     tenant?.id || '',
+    tenantColor:  tenant?.color || '#60a5fa',
   })).filter(r => r.cost > 0.001);
 }
 
-export async function listSubscriptions() {
-  const d = await get('subscriptions');
-  return (d.value || []).filter(s => s.state === 'Enabled');
+async function proxyGet(tenantId, path, apiVersion = '2022-12-01') {
+  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}&tenantId=${tenantId}`);
+  const text = await res.text();
+  if (!text) throw new Error(`Empty response from ${path}`);
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Bad JSON: ${text.slice(0, 200)}`); }
 }
 
-// Fetch one subscription sequentially to avoid 429s
+async function proxyPost(tenantId, path, body, apiVersion = '2023-11-01') {
+  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}&tenantId=${tenantId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  if (!text) throw new Error(`Empty response from ${path}`);
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Bad JSON: ${text.slice(0, 200)}`); }
+}
+
+async function getSubscriptionsForTenant(tenant) {
+  try {
+    const d = await proxyGet(tenant.id, 'subscriptions');
+    return (d.value || [])
+      .filter(s => s.state === 'Enabled')
+      .map(s => ({ ...s, tenant, tenantName: tenant.name }));
+  } catch(e) {
+    console.warn(`Failed to get subs for ${tenant.name}:`, e.message);
+    return [];
+  }
+}
+
 async function fetchOneSub(sub, start, end) {
+  const tid = sub.tenant.id;
   const sid = sub.subscriptionId;
+  const costPath = `subscriptions/${sid}/providers/Microsoft.CostManagement/query`;
 
-  // Fetch detailed first
-  let detRows = [];
+  let detRows = [], monRows = [], dayRows = [];
+
   try {
-    const det = await post(
-      `subscriptions/${sid}/providers/Microsoft.CostManagement/query`,
-      { type:'ActualCost', timeframe:'Custom', timePeriod:{from:start,to:end},
-        dataset:{ granularity:'None',
-          aggregation:{totalCost:{name:'Cost',function:'Sum'}},
-          grouping:[
-            {type:'Dimension',name:'ServiceName'},
-            {type:'Dimension',name:'ResourceGroupName'},
-            {type:'Dimension',name:'ResourceType'},
-          ]
-        }
+    const det = await proxyPost(tid, costPath, {
+      type: 'ActualCost', timeframe: 'Custom',
+      timePeriod: { from: start, to: end },
+      dataset: { granularity: 'None',
+        aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+        grouping: [
+          { type: 'Dimension', name: 'ServiceName' },
+          { type: 'Dimension', name: 'ResourceGroupName' },
+          { type: 'Dimension', name: 'ResourceType' },
+        ]
       }
-    );
-    detRows = parseRows(det, sub);
-  } catch(e) { console.warn('detailed failed:', sub.displayName, e.message); }
+    });
+    detRows = parseRows(det, sub, sub.tenant);
+  } catch(e) { console.warn('det failed:', sub.displayName, e.message); }
 
-  await sleep(500); // pace requests
+  await sleep(600);
 
-  // Monthly trend
-  let monRows = [];
   try {
-    const mon = await post(
-      `subscriptions/${sid}/providers/Microsoft.CostManagement/query`,
-      { type:'ActualCost', timeframe:'Custom', timePeriod:{from:start,to:end},
-        dataset:{ granularity:'Monthly',
-          aggregation:{totalCost:{name:'Cost',function:'Sum'}},
-          grouping:[{type:'Dimension',name:'ServiceName'}]
-        }
+    const mon = await proxyPost(tid, costPath, {
+      type: 'ActualCost', timeframe: 'Custom',
+      timePeriod: { from: start, to: end },
+      dataset: { granularity: 'Monthly',
+        aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+        grouping: [{ type: 'Dimension', name: 'ServiceName' }]
       }
-    );
-    monRows = parseRows(mon, sub);
-  } catch(e) { console.warn('monthly failed:', sub.displayName, e.message); }
+    });
+    monRows = parseRows(mon, sub, sub.tenant);
+  } catch(e) { console.warn('mon failed:', sub.displayName, e.message); }
 
-  await sleep(500);
+  await sleep(600);
 
-  // Daily spend
-  let dayRows = [];
   try {
-    const day = await post(
-      `subscriptions/${sid}/providers/Microsoft.CostManagement/query`,
-      { type:'ActualCost', timeframe:'Custom', timePeriod:{from:start,to:end},
-        dataset:{ granularity:'Daily',
-          aggregation:{totalCost:{name:'Cost',function:'Sum'}},
-        }
+    const day = await proxyPost(tid, costPath, {
+      type: 'ActualCost', timeframe: 'Custom',
+      timePeriod: { from: start, to: end },
+      dataset: { granularity: 'Daily',
+        aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
       }
-    );
-    dayRows = parseRows(day, sub);
-  } catch(e) { console.warn('daily failed:', sub.displayName, e.message); }
+    });
+    dayRows = parseRows(day, sub, sub.tenant);
+  } catch(e) { console.warn('day failed:', sub.displayName, e.message); }
 
   return { sub, detRows, monRows, dayRows };
 }
 
 export async function fetchAllData(start, end, onProgress) {
-  const subscriptions = await listSubscriptions();
+  // Get all subscriptions across all tenants first
+  const allSubsNested = await Promise.all(TENANTS.map(t => getSubscriptionsForTenant(t)));
+  const allSubs = allSubsNested.flat();
 
-  const allDetailed = [];
-  const allMonthly  = [];
-  const allDaily    = [];
-  const errors      = [];
+  const allDetailed = [], allMonthly = [], allDaily = [], errors = [];
 
-  // Sequential with 1s gap between subscriptions to avoid 429
-  for (let i = 0; i < subscriptions.length; i++) {
-    const sub = subscriptions[i];
-    if (onProgress) onProgress(i, subscriptions.length, sub.displayName);
+  for (let i = 0; i < allSubs.length; i++) {
+    const sub = allSubs[i];
+    if (onProgress) onProgress(i, allSubs.length, `${sub.tenant.name} · ${sub.displayName}`);
     try {
       const result = await fetchOneSub(sub, start, end);
       allDetailed.push(...result.detRows);
@@ -143,9 +150,12 @@ export async function fetchAllData(start, end, onProgress) {
     } catch(e) {
       errors.push(`${sub.displayName}: ${e.message}`);
     }
-    // Pause between subscriptions
-    if (i < subscriptions.length - 1) await sleep(1000);
+    if (i < allSubs.length - 1) await sleep(800);
   }
 
-  return { subscriptions, allDetailed, allMonthly, allDaily, errors };
+  return {
+    subscriptions: allSubs,
+    tenants: TENANTS,
+    allDetailed, allMonthly, allDaily, errors
+  };
 }
