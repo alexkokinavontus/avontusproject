@@ -316,11 +316,7 @@ export default function App(){
             <>
               <div className="kpis">
                 <div className="kpi blue"><div className="kl">Total Spend</div><div className="kv">{fmt(P.grandTotal)}</div><div className="ks">{data?.subscriptions?.length} subscriptions · {P.tenants.length} tenants</div></div>
-                <div className="kpi" style={{"--ac":P.grandTotal>BUDGET_TOTAL?"var(--red)":"var(--green)"}}>
-                  <div className="kl">Budget ({fmt(BUDGET_TOTAL)})</div>
-                  <div className="kv" style={{color:P.grandTotal>BUDGET_TOTAL?"var(--red)":"var(--green)"}}>{P.grandTotal>BUDGET_TOTAL?`+${fmt(P.grandTotal-BUDGET_TOTAL)} over`:`${fmt(BUDGET_TOTAL-P.grandTotal)} under`}</div>
-                  <Bar pct={P.grandTotal/BUDGET_TOTAL*100} color={P.grandTotal>BUDGET_TOTAL?"var(--red)":"var(--green)"}/>
-                </div>
+
                 <div className="kpi purple"><div className="kl">App Services</div><div className="kv">{fmt(P.asTotal)}</div><div className="ks">{P.grandTotal?(P.asTotal/P.grandTotal*100).toFixed(1):0}% of total</div></div>
                 <div className="kpi amber"><div className="kl">Month Progress</div><div className="kv">{((dayOfMonth/daysInMonth)*100).toFixed(0)}%</div><Bar pct={dayOfMonth/daysInMonth*100} color="var(--amber)"/></div>
               </div>
