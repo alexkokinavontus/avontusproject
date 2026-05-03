@@ -89,6 +89,7 @@ export default function App(){
   const [invoicesLoading,setInvoicesLoading]=useState(false);
   const [invoiceFilter,setInvoiceFilter]=useState("all");
   const [invoiceSearch,setInvoiceSearch]=useState("");
+  const [selectedInvoice,setSelectedInvoice]=useState(null);
   const [theme,setTheme]=useState(()=>localStorage.getItem("azr-theme")||"dark");
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
@@ -142,6 +143,107 @@ export default function App(){
     if(view==="invoices"&&data&&!invoices&&!invoicesLoading)loadInvoices();
   },[view,data]);
   const applyDate=(k,v)=>{const r={...dates,[k]:v};setPreset(null);setDates(r);load(r);};
+
+  const exportInvoicePDF=async(inv)=>{
+    // Dynamic import jsPDF
+    const {jsPDF} = await import("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/+esm");
+    const doc = new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
+    const W=210, margin=20;
+    let y=margin;
+
+    // Header
+    doc.setFillColor(7,9,15);
+    doc.rect(0,0,W,40,"F");
+    doc.setTextColor(255,255,255);
+    doc.setFontSize(20);doc.setFont("helvetica","bold");
+    doc.text("AzureReader",margin,18);
+    doc.setFontSize(10);doc.setFont("helvetica","normal");
+    doc.text("Azure Cost Statement",margin,26);
+    doc.setFontSize(14);doc.setFont("helvetica","bold");
+    doc.text(inv.label||inv.name,W-margin,18,{align:"right"});
+    doc.setFontSize(9);doc.setFont("helvetica","normal");
+    doc.text(inv.periodStart+" – "+inv.periodEnd,W-margin,26,{align:"right"});
+    y=50;
+
+    // Statement info box
+    doc.setFillColor(240,244,250);
+    doc.rect(margin,y,W-margin*2,28,"F");
+    doc.setTextColor(15,22,41);
+    doc.setFontSize(9);doc.setFont("helvetica","bold");
+    doc.text("BILLING PERIOD",margin+4,y+8);
+    doc.text("STATUS",margin+60,y+8);
+    doc.text("TOTAL AMOUNT",margin+110,y+8);
+    doc.text("SUBSCRIPTIONS",margin+155,y+8);
+    doc.setFont("helvetica","normal");doc.setFontSize(11);
+    doc.text(inv.label||inv.periodStart,margin+4,y+18);
+    doc.setTextColor(5,150,105);
+    doc.text(inv.status,margin+60,y+18);
+    doc.setTextColor(15,22,41);doc.setFont("helvetica","bold");doc.setFontSize(13);
+    doc.text("$"+Number(inv.amount).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}),margin+110,y+18);
+    doc.setFont("helvetica","normal");doc.setFontSize(11);
+    doc.text(String(Object.keys(inv.bySub||{}).length||"—"),margin+155,y+18);
+    y+=36;
+
+    // By Tenant
+    if(inv.byTenant&&Object.keys(inv.byTenant).length>0){
+      doc.setFontSize(10);doc.setFont("helvetica","bold");doc.setTextColor(15,22,41);
+      doc.text("Cost by Tenant",margin,y);y+=6;
+      doc.setLineWidth(0.3);doc.setDrawColor(200,210,230);
+      doc.line(margin,y,W-margin,y);y+=5;
+      Object.entries(inv.byTenant).sort((a,b)=>b[1]-a[1]).forEach(([t,c])=>{
+        doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(61,79,114);
+        doc.text(t,margin+2,y);
+        doc.setTextColor(15,22,41);doc.setFont("helvetica","bold");
+        doc.text("$"+Number(c).toLocaleString("en-US",{minimumFractionDigits:2}),W-margin,y,{align:"right"});
+        y+=6;
+      });
+      y+=4;
+    }
+
+    // By Subscription
+    if(inv.bySub&&Object.keys(inv.bySub).length>0){
+      doc.setFontSize(10);doc.setFont("helvetica","bold");doc.setTextColor(15,22,41);
+      doc.text("Cost by Subscription",margin,y);y+=6;
+      doc.setLineWidth(0.3);doc.setDrawColor(200,210,230);
+      doc.line(margin,y,W-margin,y);y+=2;
+
+      // Table header
+      doc.setFillColor(240,244,250);
+      doc.rect(margin,y,W-margin*2,7,"F");
+      doc.setFontSize(8);doc.setFont("helvetica","bold");doc.setTextColor(100,120,150);
+      doc.text("SUBSCRIPTION",margin+2,y+5);
+      doc.text("AMOUNT",W-margin-2,y+5,{align:"right"});
+      y+=9;
+
+      let rowIdx=0;
+      Object.entries(inv.bySub).sort((a,b)=>b[1]-a[1]).forEach(([sub,cost])=>{
+        if(rowIdx%2===0){doc.setFillColor(248,250,252);doc.rect(margin,y-1,W-margin*2,7,"F");}
+        doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(61,79,114);
+        doc.text(sub.length>55?sub.slice(0,52)+"...":sub,margin+2,y+4);
+        doc.setTextColor(15,22,41);doc.setFont("helvetica","bold");
+        doc.text("$"+Number(cost).toLocaleString("en-US",{minimumFractionDigits:2}),W-margin-2,y+4,{align:"right"});
+        y+=7;rowIdx++;
+        if(y>265){doc.addPage();y=20;}
+      });
+      y+=4;
+    }
+
+    // Total line
+    doc.setLineWidth(0.5);doc.setDrawColor(29,111,216);
+    doc.line(margin,y,W-margin,y);y+=6;
+    doc.setFontSize(12);doc.setFont("helvetica","bold");doc.setTextColor(15,22,41);
+    doc.text("Total",margin,y);
+    doc.setTextColor(29,111,216);
+    doc.text("$"+Number(inv.amount).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}),W-margin,y,{align:"right"});
+    y+=10;
+
+    // Footer
+    doc.setFontSize(7);doc.setFont("helvetica","normal");doc.setTextColor(150,160,180);
+    doc.text("Generated by AzureReader · avontus.com · "+new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}),margin,285);
+    doc.text("Data sourced from Azure Cost Management API",W-margin,285,{align:"right"});
+
+    doc.save((inv.name||"statement")+".pdf");
+  };
 
   // ── Process ──────────────────────────────────────────────────────────────
   const P=useMemo(()=>{
@@ -754,7 +856,7 @@ export default function App(){
                               const period=inv.periodStart&&inv.periodEnd?`${new Date(inv.periodStart+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})} – ${new Date(inv.periodEnd+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})}`:inv.invoiceDate?new Date(inv.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
                               const due=inv.dueDate?new Date(inv.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
                               return(
-                                <tr key={i} className={inv.status==="PastDue"?"inv-overdue":""}>
+                                <tr key={i} className={`inv-row${inv.status==="PastDue"?" inv-overdue":""}`} onClick={()=>setSelectedInvoice(inv)}>
                                   <td><span className="mono" style={{fontSize:12}}>{inv.name||inv.id}</span></td>
                                   <td><TenantBadge name={inv.tenant?.split(" ")[0]||"?"} color={inv.tenantColor||"#60a5fa"}/></td>
                                   <td className="dim">{inv.subName||inv.billingProfileName||"—"}</td>
@@ -766,13 +868,12 @@ export default function App(){
                                     </span>
                                   </td>
                                   <td className="r mono hi">{fmt(inv.amount,2)} <span className="dim" style={{fontSize:10}}>{inv.currency}</span></td>
-                                  <td className="r">
+                                  <td className="r" style={{display:"flex",gap:6,justifyContent:"flex-end",alignItems:"center"}}>
+                                    <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();setSelectedInvoice(inv);}}>👁 View</button>
                                     {inv.downloadUrl?(
-                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn">
-                                        ↓ PDF
-                                      </a>
+                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn" onClick={e=>e.stopPropagation()}>↓ PDF</a>
                                     ):(
-                                      <span className="dim" style={{fontSize:11}}>—</span>
+                                      <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}}>↓ PDF</button>
                                     )}
                                   </td>
                                 </tr>
@@ -798,5 +899,89 @@ export default function App(){
         </div>
       </div>
     </div>
+
+      {/* ── Invoice Detail Modal ── */}
+      {selectedInvoice&&(
+        <div className="inv-modal-overlay" onClick={()=>setSelectedInvoice(null)}>
+          <div className="inv-modal" onClick={e=>e.stopPropagation()}>
+            <div className="inv-modal-hdr">
+              <div>
+                <div className="inv-modal-title">{selectedInvoice.label||selectedInvoice.name}</div>
+                <div className="inv-modal-sub">{selectedInvoice.periodStart} — {selectedInvoice.periodEnd}</div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button className="inv-dl-btn" style={{padding:"7px 14px",fontSize:13}} onClick={()=>exportInvoicePDF(selectedInvoice)}>↓ Download PDF</button>
+                {selectedInvoice.downloadUrl&&<a href={selectedInvoice.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn" style={{padding:"7px 14px",fontSize:13}}>↓ Azure PDF</a>}
+                <button className="rb" onClick={()=>setSelectedInvoice(null)}>✕</button>
+              </div>
+            </div>
+            <div className="inv-modal-body">
+              {/* Summary */}
+              <div className="inv-summary-cards">
+                <div className="inv-sc blue"><div className="inv-sc-l">Total Amount</div><div className="inv-sc-v">{fmt(selectedInvoice.amount,2)}</div><div className="inv-sc-s">{selectedInvoice.currency}</div></div>
+                <div className="inv-sc" style={{"--ac":selectedInvoice.status==="Closed"||selectedInvoice.status==="Paid"?"var(--green)":selectedInvoice.status==="Current"?"var(--blue)":"var(--amber)"}}>
+                  <div className="inv-sc-l">Status</div>
+                  <div className="inv-sc-v" style={{fontSize:20,color:selectedInvoice.status==="Closed"||selectedInvoice.status==="Paid"?"var(--green)":selectedInvoice.status==="Current"?"var(--blue)":"var(--amber)"}}>{selectedInvoice.status}</div>
+                </div>
+                <div className="inv-sc green"><div className="inv-sc-l">Subscriptions</div><div className="inv-sc-v">{Object.keys(selectedInvoice.bySub||{}).length||"—"}</div></div>
+                <div className="inv-sc amber"><div className="inv-sc-l">Tenants</div><div className="inv-sc-v">{Object.keys(selectedInvoice.byTenant||{}).length||"—"}</div></div>
+              </div>
+
+              {/* By Tenant */}
+              {selectedInvoice.byTenant&&Object.keys(selectedInvoice.byTenant).length>0&&(
+                <div className="inv-section">
+                  <div className="inv-section-title">Cost by Tenant</div>
+                  <table className="tbl">
+                    <thead><tr><th>Tenant</th><th className="r">Amount</th><th className="r">% Share</th><th>Distribution</th></tr></thead>
+                    <tbody>
+                      {Object.entries(selectedInvoice.byTenant).sort((a,b)=>b[1]-a[1]).map(([t,c])=>{
+                        const tc=TENANTS.find(x=>x.name===t);
+                        return(
+                          <tr key={t}>
+                            <td><TenantBadge name={t} color={tc?.color||"#60a5fa"}/></td>
+                            <td className="r mono hi">{fmt(c,2)}</td>
+                            <td className="r mono dim">{selectedInvoice.amount?(c/selectedInvoice.amount*100).toFixed(1):0}%</td>
+                            <td><Bar pct={selectedInvoice.amount?c/selectedInvoice.amount*100:0} color={tc?.color||"#60a5fa"}/></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* By Subscription */}
+              {selectedInvoice.bySub&&Object.keys(selectedInvoice.bySub).length>0&&(
+                <div className="inv-section">
+                  <div className="inv-section-title">Cost by Subscription</div>
+                  <table className="tbl">
+                    <thead><tr><th>Subscription</th><th className="r">Amount</th><th className="r">% Share</th><th>Distribution</th></tr></thead>
+                    <tbody>
+                      {Object.entries(selectedInvoice.bySub).sort((a,b)=>b[1]-a[1]).map(([sub,cost])=>{
+                        const subData=P?.subs?.find(s=>s.name===sub);
+                        return(
+                          <tr key={sub}>
+                            <td><span className="dot" style={{background:subData?.tenantColor||"#60a5fa"}}/>{sub}</td>
+                            <td className="r mono hi">{fmt(cost,2)}</td>
+                            <td className="r mono dim">{selectedInvoice.amount?(cost/selectedInvoice.amount*100).toFixed(1):0}%</td>
+                            <td><Bar pct={selectedInvoice.amount?cost/selectedInvoice.amount*100:0} color={subData?.tenantColor||"#60a5fa"}/></td>
+                          </tr>
+                        );
+                      })}
+                      <tr style={{borderTop:"2px solid var(--b2)"}}>
+                        <td><strong>Total</strong></td>
+                        <td className="r mono hi"><strong>{fmt(selectedInvoice.amount,2)}</strong></td>
+                        <td className="r mono">100%</td>
+                        <td/>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+  </div>
   );
 }
