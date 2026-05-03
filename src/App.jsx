@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchAllData, parseAzureDate, TENANTS } from "./api/azure";
+import { getStoredUser, signIn, signOut } from "./auth/msal";
 
 const BUDGET_TOTAL = 155000;
 const SVC_COLORS = ["#60a5fa","#a78bfa","#34d399","#fb923c","#f87171","#2dd4bf","#facc15","#e879f9","#4ade80","#f59e0b","#818cf8","#38bdf8","#f472b6","#84cc16","#22d3ee"];
@@ -84,6 +85,30 @@ export default function App(){
   const [search,setSearch]=useState("");
   const [sortDesc,setSortDesc]=useState(true);
   const [progress,setProgress]=useState({i:0,total:0,name:""});
+  const [theme,setTheme]=useState(()=>localStorage.getItem("azr-theme")||"dark");
+  const [user,setUser]=useState(null);
+  const [authLoading,setAuthLoading]=useState(true);
+
+  useEffect(()=>{
+    document.documentElement.setAttribute("data-theme",theme);
+    localStorage.setItem("azr-theme",theme);
+  },[theme]);
+
+  useEffect(()=>{
+    getStoredUser().then(u=>{setUser(u);setAuthLoading(false);});
+  },[]);
+
+  const handleSignIn=async()=>{
+    setAuthLoading(true);
+    try{ const u=await signIn(); if(u)setUser(u); }
+    catch(e){ console.error(e); }
+    finally{ setAuthLoading(false); }
+  };
+
+  const handleSignOut=async()=>{
+    await signOut();
+    setUser(null);
+  };
 
   const load=useCallback(async(range)=>{
     setLoading(true);setError(null);setExpSvc({});setExpRg({});
@@ -197,6 +222,33 @@ export default function App(){
   const selTenant=TENANTS.find(t=>t.id===selTenantId);
   const selSub=data?.subscriptions?.find(s=>s.subscriptionId===selSubId);
 
+  // Auth gate
+  if(authLoading)return(
+    <div className="splash">
+      <div className="sp-wrap"><div className="sp-ring"/><div className="sp-logo">A</div></div>
+      <div className="sp-title">AzureReader</div>
+      <div className="sp-sub">Checking authentication…</div>
+    </div>
+  );
+
+  if(!user)return(
+    <div className="splash">
+      <div className="login-card">
+        <div className="lc-logo"><div className="sp-logo" style={{width:52,height:52,fontSize:26}}>A</div></div>
+        <div className="lc-title">AzureReader</div>
+        <div className="lc-sub">Sign in with your Microsoft account to access the Azure Cost Dashboard</div>
+        <button className="lc-btn" onClick={handleSignIn}>
+          <svg width="20" height="20" viewBox="0 0 23 23" style={{flexShrink:0}}><path fill="#f25022" d="M0 0h11v11H0z"/><path fill="#00a4ef" d="M12 0h11v11H12z"/><path fill="#7fba00" d="M0 12h11v11H0z"/><path fill="#ffb900" d="M12 12h11v11H12z"/></svg>
+          Sign in with Microsoft
+        </button>
+        <div className="lc-hint">Requires access to the Avontus Software tenant</div>
+        <div className="lc-theme">
+          <button className="rb" onClick={()=>setTheme(t=>t==="dark"?"light":"dark")}>{theme==="dark"?"☀ Light":"🌙 Dark"}</button>
+        </div>
+      </div>
+    </div>
+  );
+
   if(loading)return(
     <div className="splash">
       <div className="sp-wrap"><div className="sp-ring"/><div className="sp-logo">A</div></div>
@@ -293,6 +345,17 @@ export default function App(){
               <input type="date" className="di" value={dates.end} min={dates.start} onChange={e=>applyDate("end",e.target.value)}/>
             </div>
             <button className="rb" onClick={()=>load(dates)}>↻</button>
+            <button className="rb theme-btn" onClick={()=>setTheme(t=>t==="dark"?"light":"dark")} title="Toggle theme">
+              {theme==="dark"?"☀":"🌙"}
+            </button>
+            <div className="user-menu">
+              <div className="user-avatar" title={user?.email}>{user?.initials||"?"}</div>
+              <div className="user-drop">
+                <div className="ud-name">{user?.name}</div>
+                <div className="ud-email">{user?.email}</div>
+                <button className="ud-signout" onClick={handleSignOut}>Sign out</button>
+              </div>
+            </div>
           </div>
         </div>
 
