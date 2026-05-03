@@ -898,7 +898,6 @@ export default function App(){
           )}
         </div>
       </div>
-    </div>
 
       {/* ── Invoice Detail Modal ── */}
       {selectedInvoice&&(
@@ -982,6 +981,6 @@ export default function App(){
           </div>
         </div>
       )}
-  </div>
+    </div>
   );
 }
