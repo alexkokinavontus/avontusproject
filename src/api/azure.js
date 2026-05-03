@@ -159,3 +159,103 @@ export async function fetchAllData(start, end, onProgress) {
     allDetailed, allMonthly, allDaily, errors
   };
 }
+
+
+// ── Billing / Invoices ────────────────────────────────────────────────────────
+
+export async function getBillingAccounts(tenantId) {
+  try {
+    const res = await proxyGet(tenantId, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01');
+    return res.value || [];
+  } catch(e) {
+    console.warn('billingAccounts failed:', e.message);
+    return [];
+  }
+}
+
+export async function getInvoicesForBillingAccount(tenantId, billingAccountName) {
+  try {
+    const res = await proxyGet(
+      tenantId,
+      `providers/Microsoft.Billing/billingAccounts/${billingAccountName}/invoices`,
+      '2020-05-01'
+    );
+    return (res.value || []).map(i => normalizeInvoice(i, tenantId));
+  } catch(e) {
+    console.warn('billing account invoices failed:', e.message);
+    return [];
+  }
+}
+
+export async function getInvoicesForSubscription(tenantId, subscriptionId) {
+  const now = new Date();
+  const start = new Date(now.getFullYear() - 1, 0, 1).toISOString().split('T')[0];
+  const end = now.toISOString().split('T')[0];
+  try {
+    const res = await proxyGet(
+      tenantId,
+      `subscriptions/${subscriptionId}/providers/Microsoft.Billing/invoices`,
+      '2020-09-01&periodStartDate=' + start + '&periodEndDate=' + end
+    );
+    return (res.value || []).map(i => normalizeInvoice(i, tenantId, subscriptionId));
+  } catch(e) {
+    console.warn('sub invoices failed:', subscriptionId, e.message);
+    return [];
+  }
+}
+
+function normalizeInvoice(inv, tenantId, subscriptionId) {
+  const p = inv.properties || {};
+  return {
+    id: inv.name || inv.id,
+    name: inv.name,
+    status: p.status || p.invoiceStatus || 'Unknown',
+    dueDate: p.dueDate || p.invoicePeriodEndDate || '',
+    invoiceDate: p.invoiceDate || p.invoicePeriodStartDate || '',
+    periodStart: p.billingProfileDisplayName ? p.invoicePeriodStartDate : p.invoicePeriodStartDate,
+    periodEnd: p.invoicePeriodEndDate || '',
+    amount: p.amountDue?.value ?? p.subTotal?.value ?? p.totalAmount?.value ?? 0,
+    currency: p.amountDue?.currency ?? p.currency ?? 'USD',
+    downloadUrl: p.invoiceDocuments?.[0]?.url || p.downloadUrl || null,
+    billingProfileName: p.billingProfileDisplayName || '',
+    subscriptionId: subscriptionId || '',
+    tenantId,
+  };
+}
+
+export async function fetchAllInvoices(subscriptions, tenants) {
+  const all = [];
+
+  for (const tenant of tenants) {
+    // Try billing account level first
+    const billingAccounts = await getBillingAccounts(tenant.id);
+    for (const ba of billingAccounts) {
+      const invs = await getInvoicesForBillingAccount(tenant.id, ba.name);
+      invs.forEach(i => { i.tenant = tenant.name; i.tenantColor = tenant.color; i.source = 'billing-account'; });
+      all.push(...invs);
+      await sleep(500);
+    }
+
+    // Also try subscription level for each sub in this tenant
+    const tenantSubs = subscriptions.filter(s => s.tenantId === tenant.id || s.tenant?.id === tenant.id);
+    for (const sub of tenantSubs) {
+      const invs = await getInvoicesForSubscription(tenant.id, sub.subscriptionId);
+      invs.forEach(i => {
+        i.tenant = tenant.name;
+        i.tenantColor = tenant.color;
+        i.subName = sub.displayName;
+        i.source = 'subscription';
+      });
+      all.push(...invs);
+      await sleep(400);
+    }
+  }
+
+  // Deduplicate by invoice name
+  const seen = new Set();
+  return all.filter(i => {
+    if (seen.has(i.id)) return false;
+    seen.add(i.id);
+    return true;
+  }).sort((a, b) => (b.dueDate || b.invoiceDate || '').localeCompare(a.dueDate || a.invoiceDate || ''));
+}
