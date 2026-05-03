@@ -1,6 +1,8 @@
 // Multi-tenant Azure Cost Management API
 // 4 tenants, 14 subscriptions
 
+import { getUserMgmtToken } from '../auth/msal';
+
 const BASE = 'https://azurereader-api.azurewebsites.net/api/proxy';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -47,8 +49,10 @@ export function parseRows(resp, sub, tenant) {
   })).filter(r => r.cost > 0.001);
 }
 
-async function proxyGet(tenantId, path, apiVersion = '2022-12-01') {
-  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}&tenantId=${tenantId}`);
+async function proxyGet(tenantId, path, apiVersion = '2022-12-01', userToken = null) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (userToken) headers['X-User-Token'] = userToken;
+  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}&tenantId=${tenantId}`, { headers });
   const text = await res.text();
   if (!text) throw new Error(`Empty response from ${path}`);
   try { return JSON.parse(text); }
@@ -161,101 +165,141 @@ export async function fetchAllData(start, end, onProgress) {
 }
 
 
-// ── Billing / Invoices ────────────────────────────────────────────────────────
+// ── Invoices ─────────────────────────────────────────────────────────────────
+// Generates monthly invoice-style statements from Cost Management data
+// Falls back gracefully if billing account access is not available
 
-export async function getBillingAccounts(tenantId) {
+async function tryBillingAccountInvoices(tenantId, billingAccountName, userToken) {
   try {
-    const res = await proxyGet(tenantId, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01');
-    return res.value || [];
-  } catch(e) {
-    console.warn('billingAccounts failed:', e.message);
-    return [];
-  }
-}
-
-export async function getInvoicesForBillingAccount(tenantId, billingAccountName) {
-  try {
-    const res = await proxyGet(
-      tenantId,
+    const res = await proxyGet(tenantId,
       `providers/Microsoft.Billing/billingAccounts/${billingAccountName}/invoices`,
-      '2020-05-01'
+      '2020-05-01',
+      userToken
     );
-    return (res.value || []).map(i => normalizeInvoice(i, tenantId));
+    return (res.value || []).map(inv => {
+      const p = inv.properties || {};
+      return {
+        id: inv.name,
+        name: inv.name,
+        type: 'azure-invoice',
+        status: p.status || 'Unknown',
+        invoiceDate: p.invoiceDate || p.billingPeriodStartDate || '',
+        periodStart: p.invoicePeriodStartDate || '',
+        periodEnd: p.invoicePeriodEndDate || '',
+        dueDate: p.dueDate || '',
+        amount: p.amountDue?.value ?? p.totalAmount?.value ?? 0,
+        currency: p.amountDue?.currency ?? 'USD',
+        downloadUrl: p.invoiceDocuments?.[0]?.url || null,
+        billingProfile: p.billingProfileDisplayName || '',
+        tenantId,
+      };
+    });
   } catch(e) {
-    console.warn('billing account invoices failed:', e.message);
     return [];
   }
-}
-
-export async function getInvoicesForSubscription(tenantId, subscriptionId) {
-  const now = new Date();
-  const start = new Date(now.getFullYear() - 1, 0, 1).toISOString().split('T')[0];
-  const end = now.toISOString().split('T')[0];
-  try {
-    const res = await proxyGet(
-      tenantId,
-      `subscriptions/${subscriptionId}/providers/Microsoft.Billing/invoices`,
-      '2020-09-01&periodStartDate=' + start + '&periodEndDate=' + end
-    );
-    return (res.value || []).map(i => normalizeInvoice(i, tenantId, subscriptionId));
-  } catch(e) {
-    console.warn('sub invoices failed:', subscriptionId, e.message);
-    return [];
-  }
-}
-
-function normalizeInvoice(inv, tenantId, subscriptionId) {
-  const p = inv.properties || {};
-  return {
-    id: inv.name || inv.id,
-    name: inv.name,
-    status: p.status || p.invoiceStatus || 'Unknown',
-    dueDate: p.dueDate || p.invoicePeriodEndDate || '',
-    invoiceDate: p.invoiceDate || p.invoicePeriodStartDate || '',
-    periodStart: p.billingProfileDisplayName ? p.invoicePeriodStartDate : p.invoicePeriodStartDate,
-    periodEnd: p.invoicePeriodEndDate || '',
-    amount: p.amountDue?.value ?? p.subTotal?.value ?? p.totalAmount?.value ?? 0,
-    currency: p.amountDue?.currency ?? p.currency ?? 'USD',
-    downloadUrl: p.invoiceDocuments?.[0]?.url || p.downloadUrl || null,
-    billingProfileName: p.billingProfileDisplayName || '',
-    subscriptionId: subscriptionId || '',
-    tenantId,
-  };
 }
 
 export async function fetchAllInvoices(subscriptions, tenants) {
-  const all = [];
+  const realInvoices = [];
+  const monthlyStatements = [];
 
+  // Get user's delegated token for billing access
+  const userToken = await getUserMgmtToken();
+
+  // Try real billing account invoices first
   for (const tenant of tenants) {
-    // Try billing account level first
-    const billingAccounts = await getBillingAccounts(tenant.id);
-    for (const ba of billingAccounts) {
-      const invs = await getInvoicesForBillingAccount(tenant.id, ba.name);
-      invs.forEach(i => { i.tenant = tenant.name; i.tenantColor = tenant.color; i.source = 'billing-account'; });
-      all.push(...invs);
-      await sleep(500);
+    try {
+      const baRes = await proxyGet(tenant.id, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01', userToken);
+      const accounts = baRes.value || [];
+      for (const ba of accounts) {
+        const invs = await tryBillingAccountInvoices(tenant.id, ba.name, userToken);
+        invs.forEach(i => {
+          i.tenant = tenant.name;
+          i.tenantColor = tenant.color;
+          i.subName = ba.properties?.displayName || ba.name;
+          i.source = 'billing-account';
+        });
+        realInvoices.push(...invs);
+        await sleep(300);
+      }
+    } catch(e) { /* no billing access */ }
+  }
+
+  // Always generate monthly cost statements from Cost Management (no special perms needed)
+  const now = new Date();
+  for (let m = 11; m >= 0; m--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
+    const start = d.toISOString().slice(0, 10);
+    const end = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+    const isPast = end < now.toISOString().slice(0, 10);
+    const isCurrent = d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    const label = d.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+    let totalCost = 0;
+    const byTenant = {};
+    const bySub = {};
+
+    for (const tenant of tenants) {
+      const tenantSubs = subscriptions.filter(s =>
+        s.tenantId === tenant.id || s.tenant?.id === tenant.id
+      );
+      for (const sub of tenantSubs) {
+        try {
+          const res = await proxyPost(tenant.id,
+            `subscriptions/${sub.subscriptionId}/providers/Microsoft.CostManagement/query`,
+            {
+              type: 'ActualCost',
+              timeframe: 'Custom',
+              timePeriod: { from: start, to: end },
+              dataset: {
+                granularity: 'None',
+                aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+                grouping: [{ type: 'Dimension', name: 'ServiceName' }]
+              }
+            }
+          );
+          const cols = (res.properties?.columns || []).map(c => c.name.toLowerCase());
+          const costI = cols.findIndex(c => c === 'cost' || c === 'pretaxcost');
+          const cost = (res.properties?.rows || []).reduce((s, r) => s + (parseFloat(r[costI]) || 0), 0);
+          if (cost > 0) {
+            totalCost += cost;
+            byTenant[tenant.name] = (byTenant[tenant.name] || 0) + cost;
+            bySub[sub.displayName] = (bySub[sub.displayName] || 0) + cost;
+          }
+        } catch(e) { /* skip */ }
+        await sleep(200);
+      }
     }
 
-    // Also try subscription level for each sub in this tenant
-    const tenantSubs = subscriptions.filter(s => s.tenantId === tenant.id || s.tenant?.id === tenant.id);
-    for (const sub of tenantSubs) {
-      const invs = await getInvoicesForSubscription(tenant.id, sub.subscriptionId);
-      invs.forEach(i => {
-        i.tenant = tenant.name;
-        i.tenantColor = tenant.color;
-        i.subName = sub.displayName;
-        i.source = 'subscription';
+    if (totalCost > 0 || isCurrent) {
+      monthlyStatements.push({
+        id: `stmt-${start}`,
+        name: `Statement-${start.slice(0, 7)}`,
+        type: 'cost-statement',
+        status: isCurrent ? 'Current' : isPast ? 'Closed' : 'Pending',
+        invoiceDate: start,
+        periodStart: start,
+        periodEnd: end,
+        dueDate: '',
+        amount: totalCost,
+        currency: 'USD',
+        downloadUrl: null,
+        label,
+        tenant: 'All Tenants',
+        tenantColor: '#60a5fa',
+        subName: `${Object.keys(bySub).length} subscriptions`,
+        source: 'cost-statement',
+        byTenant,
+        bySub,
       });
-      all.push(...invs);
-      await sleep(400);
     }
   }
 
-  // Deduplicate by invoice name
+  // Merge: real invoices first, then statements
   const seen = new Set();
-  return all.filter(i => {
+  return [...realInvoices, ...monthlyStatements].filter(i => {
     if (seen.has(i.id)) return false;
     seen.add(i.id);
     return true;
-  }).sort((a, b) => (b.dueDate || b.invoiceDate || '').localeCompare(a.dueDate || a.invoiceDate || ''));
+  });
 }
