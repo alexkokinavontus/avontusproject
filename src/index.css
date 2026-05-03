@@ -176,3 +176,19 @@ body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--tex
 [data-theme="light"] .spill{background:rgba(124,58,237,.08);color:var(--purple)}
 [data-theme="light"] .user-drop{box-shadow:0 8px 24px rgba(0,0,0,.12)}
 [data-theme="light"] body{color-scheme:light}
+
+/* ── Invoices ── */
+.inv-loading{display:flex;align-items:center;gap:16px;padding:32px;color:var(--t2);font-size:13px;justify-content:center}
+.inv-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.inv-stats{display:flex;gap:0;background:var(--bg2);border:1px solid var(--b2);border-radius:11px;overflow:hidden}
+.inv-stat{padding:12px 20px;border-right:1px solid var(--b1);display:flex;flex-direction:column;gap:3px}
+.inv-stat:last-child{border-right:none}
+.inv-stat span{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.inv-stat strong{font-family:'DM Mono',monospace;font-size:16px;color:var(--text)}
+.inv-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.inv-status{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid}
+.inv-overdue td{background:rgba(248,113,113,.03) !important}
+.inv-overdue:hover td{background:rgba(248,113,113,.07) !important}
+.inv-dl-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.25);border-radius:5px;color:var(--blue);font-size:11px;font-weight:600;text-decoration:none;transition:all .12s;white-space:nowrap}
+.inv-dl-btn:hover{background:rgba(96,165,250,.2);border-color:rgba(96,165,250,.4)}
+[data-theme="light"] .inv-dl-btn{background:rgba(29,111,216,.08);border-color:rgba(29,111,216,.2);color:var(--blue)}
