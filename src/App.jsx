@@ -836,9 +836,9 @@ export default function App(){
                       <td className="r mono hi">{fmt(r.cost,4)}</td>
                     </tr>
                   ))}
-                  {P.rows.length>1000&&<tr><td colSpan={6} className="dim" style={{textAlign:"center",padding:12}}>Showing 1,000 of {P.rows.length} — use filters</td></tr>}
                 </tbody>
               </table>
+              <Pagination total={P.rows.length} page={getPage("bd")} pageSize={PAGE_SIZE} onPage={p=>setPage("bd",p)}/>
             </div>
           )}
 
