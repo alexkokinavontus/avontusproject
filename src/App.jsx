@@ -137,7 +137,7 @@ export default function App(){
     setTxnsLoading(true);
     try {
       const userToken = await import("./auth/msal").then(m => m.getUserMgmtToken());
-      const txns = await fetchInvoiceTransactions(inv.name, null, userToken);
+      const txns = await fetchInvoiceTransactions(inv, userToken);
       setInvoiceTxns(txns);
     } catch(e) { console.warn('txns failed:', e); }
     finally { setTxnsLoading(false); }
@@ -889,11 +889,7 @@ export default function App(){
                                   <td className="r mono" style={{color:inv.amountDue>0?"var(--red)":"var(--green)"}}>{fmt(inv.amountDue||0,2)}</td>
                                   <td className="r" style={{display:"flex",gap:5,justifyContent:"flex-end",alignItems:"center"}}>
                                     <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();openInvoice(inv);}}>👁</button>
-                                    {inv.downloadUrl?(
-                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn inv-dl-real" onClick={e=>e.stopPropagation()} title="Download official Microsoft invoice PDF">↓ PDF</a>
-                                    ):(
-                                      <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}} title="Export as PDF">↓ Export</button>
-                                    )}
+                                    <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}} title="Export as PDF">↓ PDF</button>
                                   </td>
                                 </tr>
                               );
@@ -929,7 +925,6 @@ export default function App(){
               </div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 <button className="inv-dl-btn" style={{padding:"7px 14px",fontSize:13}} onClick={()=>exportInvoicePDF(selectedInvoice)}>↓ Download PDF</button>
-                {selectedInvoice.downloadUrl&&<a href={selectedInvoice.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn" style={{padding:"7px 14px",fontSize:13}}>↓ Azure PDF</a>}
                 <button className="rb" onClick={()=>setSelectedInvoice(null)}>✕</button>
               </div>
             </div>
