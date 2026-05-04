@@ -1005,7 +1005,7 @@ export default function App(){
                   {!txnsLoading&&<span style={{fontSize:10,color:"var(--t3)"}}>{invoiceTxns.length} line items</span>}
                 </div>
                 {txnsLoading&&<div style={{padding:"20px",textAlign:"center",color:"var(--t3)",fontSize:12}}>Fetching transactions…</div>}
-                {!txnsLoading&&invoiceTxns.length>0&&(
+                {!txnsLoading&&invoiceTxns.length>0&&(<>
                   <table className="tbl">
                     <thead>
                       <tr>
@@ -1050,7 +1050,7 @@ export default function App(){
                     </tbody>
                   </table>
                   <Pagination total={invoiceTxns.length} page={getPage("txn")} pageSize={50} onPage={p=>setPage("txn",p)}/>
-                )}
+                </>)}
                 {!txnsLoading&&invoiceTxns.length===0&&(
                   <div style={{padding:"16px",textAlign:"center",color:"var(--t3)",fontSize:12}}>
                     No transaction detail available — requires Billing Account Reader access on the specific billing profile.
