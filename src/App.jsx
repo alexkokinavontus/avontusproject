@@ -456,7 +456,7 @@ export default function App(){
         </div>
         <nav className="sb-nav">
           {[{id:"overview",ico:"▣",lbl:"Overview"},{id:"tenants",ico:"◈",lbl:"Tenants"},{id:"services",ico:"⬡",lbl:"By Service"},{id:"appsvcs",ico:"⬢",lbl:"App Services"},{id:"subs",ico:"≡",lbl:"Subscriptions"},{id:"breakdown",ico:"⊞",lbl:"Full Breakdown"},{id:"invoices",ico:"🧾",lbl:"Invoices"}].map(v=>(
-            <button key={v.id} className={`sb-item${view===v.id?" on":""}`} onClick={()=>{setView(v.id);setPages({})}}>
+            onClick={()=>{setView(v.id);setPages({})}}
               <span className="sb-ico">{v.ico}</span>{v.lbl}
             </button>
           ))}
