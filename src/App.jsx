@@ -754,8 +754,8 @@ export default function App(){
               </div>
               <div className="panel">
                 <div className="phdr"><span className="pt">App Services — All Tenants</span><span className="ps">Click to expand</span></div>
-                {P.asGroups.length===0?<div className="empty-m">No App Service costs found for this period</div>:(
-                  <table className="tbl">
+                {P.asGroups.length===0&&<div className="empty-m">No App Service costs found for this period</div>}
+                {P.asGroups.length>0&&<table className="tbl">
                     <thead><tr><th style={{width:28}}/><th>Resource Group / Resource</th><th>Tenant</th><th>Subscription</th><th>Type</th><th className="r">Cost</th><th className="r">% of AS</th></tr></thead>
                     <tbody>
                       {P.asGroups.slice((getPage('as')-1)*PAGE_SIZE, getPage('as')*PAGE_SIZE).map(g=>{
@@ -783,9 +783,8 @@ export default function App(){
                         </>);
                       })}
                     </tbody>
-                  </table>
-                  <Pagination total={P.asGroups.length} page={getPage("as")} pageSize={PAGE_SIZE} onPage={p=>setPage("as",p)}/>
-                )}
+                  </table>}
+                {P.asGroups.length>0&&<Pagination total={P.asGroups.length} page={getPage("as")} pageSize={PAGE_SIZE} onPage={p=>setPage("as",p)}/>}
               </div>
             </>
           )}
