@@ -278,3 +278,21 @@ export async function fetchAllInvoices(subscriptions, tenants) {
     .filter(i => { if (seen.has(i.id)) return false; seen.add(i.id); return true; })
     .sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''));
 }
+
+// ── Invoice Transactions ──────────────────────────────────────────────────────
+export async function fetchInvoiceTransactions(invoiceId, billingAccountId, userToken) {
+  // Try billing account invoice transactions endpoint
+  const BA = billingAccountId || BILLING_ACCOUNTS[0];
+  try {
+    const res = await proxyGet(
+      'bd98204b-b981-4d03-8796-356d537927eb',
+      `providers/Microsoft.Billing/billingAccounts/${BA}/invoices/${invoiceId}/transactions`,
+      '2020-05-01',
+      userToken
+    );
+    return res.value || [];
+  } catch(e) {
+    console.warn('transactions failed:', e.message);
+    return [];
+  }
+}
