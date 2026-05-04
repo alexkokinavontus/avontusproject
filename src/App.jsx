@@ -800,9 +800,9 @@ export default function App(){
                   <div className="inv-toolbar">
                     <div className="inv-stats">
                       <div className="inv-stat"><span>Total invoices</span><strong>{invoices.length}</strong></div>
-                      <div className="inv-stat"><span>Total billed</span><strong>{fmt(invoices.reduce((s,i)=>s+i.amount,0),2)}</strong></div>
-                      <div className="inv-stat"><span>Outstanding</span><strong style={{color:"var(--red)"}}>{fmt(invoices.filter(i=>i.status==="Due"||i.status==="PastDue").reduce((s,i)=>s+i.amount,0),2)}</strong></div>
-                      <div className="inv-stat"><span>Paid</span><strong style={{color:"var(--green)"}}>{fmt(invoices.filter(i=>i.status==="Paid").reduce((s,i)=>s+i.amount,0),2)}</strong></div>
+                      <div className="inv-stat"><span>Total billed</span><strong>{fmt(invoices.reduce((s,i)=>s+(i.totalAmount||i.amount||0),0),2)}</strong></div>
+                      <div className="inv-stat"><span>Amount due</span><strong style={{color:"var(--red)"}}>{fmt(invoices.reduce((s,i)=>s+(i.amountDue||0),0),2)}</strong></div>
+                      <div className="inv-stat"><span>Paid</span><strong style={{color:"var(--green)"}}>{fmt(invoices.filter(i=>i.status==="Paid").reduce((s,i)=>s+(i.totalAmount||i.amount||0),0),2)}</strong></div>
                     </div>
                     <div className="inv-filters">
                       <input className="si-in" placeholder="Search invoices…" value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} style={{maxWidth:200}}/>
@@ -838,14 +838,15 @@ export default function App(){
                       <table className="tbl">
                         <thead>
                           <tr>
-                            <th>Invoice</th>
+                            <th>Invoice ID</th>
                             <th>Tenant</th>
-                            <th>Subscription / Profile</th>
-                            <th>Period</th>
-                            <th>Due Date</th>
+                            <th>Subscription</th>
+                            <th>Billing Period</th>
+                            <th>Invoice Date</th>
                             <th>Status</th>
-                            <th className="r">Amount</th>
-                            <th className="r">Download</th>
+                            <th className="r">Total Amount</th>
+                            <th className="r">Amount Due</th>
+                            <th className="r">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -857,23 +858,27 @@ export default function App(){
                               const due=inv.dueDate?new Date(inv.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
                               return(
                                 <tr key={i} className={`inv-row${inv.status==="PastDue"?" inv-overdue":""}`} onClick={()=>setSelectedInvoice(inv)}>
-                                  <td><span className="mono" style={{fontSize:12}}>{inv.name||inv.id}</span></td>
+                                  <td>
+                                    <span className="inv-id">{inv.name||inv.id}</span>
+                                    {inv.invoiceType&&inv.invoiceType!=="AzureServices"&&<span className="inv-type-badge">{inv.invoiceType}</span>}
+                                  </td>
                                   <td><TenantBadge name={inv.tenant?.split(" ")[0]||"?"} color={inv.tenantColor||"#60a5fa"}/></td>
-                                  <td className="dim">{inv.subName||inv.billingProfileName||"—"}</td>
+                                  <td className="dim" style={{fontSize:11,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.subName||"—"}</td>
                                   <td className="dim" style={{fontSize:11}}>{period}</td>
-                                  <td className="dim" style={{fontSize:11}}>{due}</td>
+                                  <td className="dim" style={{fontSize:11}}>{inv.invoiceDate?new Date(inv.invoiceDate).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—"}</td>
                                   <td>
                                     <span className="inv-status" style={{color:statusColor,background:statusColor+"18",borderColor:statusColor+"33"}}>
                                       {inv.status==="Paid"?"✓ ":inv.status==="PastDue"?"⚠ ":""}{inv.status}
                                     </span>
                                   </td>
-                                  <td className="r mono hi">{fmt(inv.amount,2)} <span className="dim" style={{fontSize:10}}>{inv.currency}</span></td>
-                                  <td className="r" style={{display:"flex",gap:6,justifyContent:"flex-end",alignItems:"center"}}>
-                                    <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();setSelectedInvoice(inv);}}>👁 View</button>
+                                  <td className="r mono hi">{fmt(inv.totalAmount||inv.amount,2)} <span className="dim" style={{fontSize:10}}>{inv.currency}</span></td>
+                                  <td className="r mono" style={{color:inv.amountDue>0?"var(--red)":"var(--green)"}}>{fmt(inv.amountDue||0,2)}</td>
+                                  <td className="r" style={{display:"flex",gap:5,justifyContent:"flex-end",alignItems:"center"}}>
+                                    <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();setSelectedInvoice(inv);}}>👁</button>
                                     {inv.downloadUrl?(
-                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn" onClick={e=>e.stopPropagation()}>↓ PDF</a>
+                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn inv-dl-real" onClick={e=>e.stopPropagation()} title="Download official invoice PDF">↓ PDF</a>
                                     ):(
-                                      <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}}>↓ PDF</button>
+                                      <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}} title="Export statement as PDF">↓ Export</button>
                                     )}
                                   </td>
                                 </tr>
