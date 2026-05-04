@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { fetchAllData, parseAzureDate, TENANTS, fetchAllInvoices } from "./api/azure";
+import { fetchAllData, parseAzureDate, TENANTS, fetchAllInvoices, fetchInvoiceTransactions } from "./api/azure";
 import { getStoredUser, signIn, signOut } from "./auth/msal";
 
 const BUDGET_TOTAL = 155000;
@@ -90,6 +90,8 @@ export default function App(){
   const [invoiceFilter,setInvoiceFilter]=useState("all");
   const [invoiceSearch,setInvoiceSearch]=useState("");
   const [selectedInvoice,setSelectedInvoice]=useState(null);
+  const [invoiceTxns,setInvoiceTxns]=useState([]);
+  const [txnsLoading,setTxnsLoading]=useState(false);
   const [theme,setTheme]=useState(()=>localStorage.getItem("azr-theme")||"dark");
   const [user,setUser]=useState(null);
   const [authLoading,setAuthLoading]=useState(true);
@@ -128,6 +130,18 @@ export default function App(){
   useEffect(()=>{load(initD);},[]);
 
   const applyPreset=p=>{const r=p.fn();setPreset(p.label);setDates(r);load(r);};
+
+  const openInvoice = async (inv) => {
+    setSelectedInvoice(inv);
+    setInvoiceTxns([]);
+    setTxnsLoading(true);
+    try {
+      const userToken = await import("./auth/msal").then(m => m.getUserMgmtToken());
+      const txns = await fetchInvoiceTransactions(inv.name, null, userToken);
+      setInvoiceTxns(txns);
+    } catch(e) { console.warn('txns failed:', e); }
+    finally { setTxnsLoading(false); }
+  };
 
   const loadInvoices=useCallback(async()=>{
     if(!data)return;
@@ -859,7 +873,7 @@ export default function App(){
                               const period=inv.periodStart&&inv.periodEnd?`${new Date(inv.periodStart+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})} – ${new Date(inv.periodEnd+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})}`:inv.invoiceDate?new Date(inv.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
                               const due=inv.dueDate?new Date(inv.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
                               return(
-                                <tr key={i} className={`inv-row${inv.status==="PastDue"?" inv-overdue":""}`} onClick={()=>setSelectedInvoice(inv)}>
+                                <tr key={i} className={`inv-row${inv.status==="PastDue"?" inv-overdue":""}`} onClick={()=>openInvoice(inv)}>
                                   <td><span className="inv-id">{inv.name||inv.id}</span></td>
                                   <td className="dim" style={{fontSize:11}}>{inv.billingProfile||inv.subName||"—"}</td>
                                   <td className="dim" style={{fontSize:11}}>{inv.invoiceDate?new Date(inv.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—"}</td>
@@ -874,7 +888,7 @@ export default function App(){
                                   <td className="r mono hi">{fmt(inv.totalAmount||0,2)}</td>
                                   <td className="r mono" style={{color:inv.amountDue>0?"var(--red)":"var(--green)"}}>{fmt(inv.amountDue||0,2)}</td>
                                   <td className="r" style={{display:"flex",gap:5,justifyContent:"flex-end",alignItems:"center"}}>
-                                    <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();setSelectedInvoice(inv);}}>👁</button>
+                                    <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();openInvoice(inv);}}>👁</button>
                                     {inv.downloadUrl?(
                                       <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn inv-dl-real" onClick={e=>e.stopPropagation()} title="Download official Microsoft invoice PDF">↓ PDF</a>
                                     ):(
@@ -942,6 +956,66 @@ export default function App(){
                 <div className="inv-detail-item"><span>Billing Profile</span><strong>{selectedInvoice.billingProfile||"—"}</strong></div>
                 {selectedInvoice.paymentMethod&&<div className="inv-detail-item"><span>Payment Method</span><strong>{selectedInvoice.paymentMethod}</strong></div>}
                 {selectedInvoice.paymentDate&&<div className="inv-detail-item"><span>Payment Date</span><strong>{new Date(selectedInvoice.paymentDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</strong></div>}
+              </div>
+
+              {/* Transactions */}
+              <div className="inv-section">
+                <div className="inv-section-title" style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span>Transactions</span>
+                  {txnsLoading&&<span style={{fontSize:10,color:"var(--t3)"}}>Loading…</span>}
+                  {!txnsLoading&&<span style={{fontSize:10,color:"var(--t3)"}}>{invoiceTxns.length} line items</span>}
+                </div>
+                {txnsLoading&&<div style={{padding:"20px",textAlign:"center",color:"var(--t3)",fontSize:12}}>Fetching transactions…</div>}
+                {!txnsLoading&&invoiceTxns.length>0&&(
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Service Period</th>
+                        <th>Product Family</th>
+                        <th>Product / SKU</th>
+                        <th>Invoice Section</th>
+                        <th className="r">Charges</th>
+                        <th className="r">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invoiceTxns.map((t,i)=>{
+                        const p=t.properties||t;
+                        const date=p.date||p.transactionDate||"";
+                        const svcStart=p.servicePeriodStartDate||"";
+                        const svcEnd=p.servicePeriodEndDate||"";
+                        const period=svcStart&&svcEnd?`${svcStart.slice(0,10)} – ${svcEnd.slice(0,10)}`:"—";
+                        const family=p.productFamily||p.productFamilyName||"—";
+                        const sku=p.productDescription||p.productType||p.productName||"—";
+                        const section=p.invoiceSectionDisplayName||p.invoiceSection||"—";
+                        const charges=p.subTotal?.value??p.charges?.value??p.amount?.value??0;
+                        const total=p.unitPrice?.value??p.subTotal?.value??charges;
+                        return(
+                          <tr key={i}>
+                            <td className="dim" style={{fontSize:11,whiteSpace:"nowrap"}}>{date?new Date(date).toLocaleDateString("en-US",{month:"numeric",day:"numeric",year:"numeric"}):"—"}</td>
+                            <td className="dim" style={{fontSize:10,whiteSpace:"nowrap"}}>{period}</td>
+                            <td style={{fontSize:11}}>{family}</td>
+                            <td style={{fontSize:11,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={sku}>{sku}</td>
+                            <td style={{fontSize:11}}><span className="rgt-sm">{section}</span></td>
+                            <td className="r mono" style={{fontSize:11}}>{fmt(charges,2)}</td>
+                            <td className="r mono hi" style={{fontSize:11}}>{fmt(total,2)}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr style={{borderTop:"2px solid var(--b2)"}}>
+                        <td colSpan={5}><strong>Total</strong></td>
+                        <td className="r mono hi"><strong>{fmt(invoiceTxns.reduce((s,t)=>{const p=t.properties||t;return s+(p.subTotal?.value??p.charges?.value??0);},0),2)}</strong></td>
+                        <td className="r mono hi"><strong>{fmt(selectedInvoice.totalAmount||0,2)}</strong></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )}
+                {!txnsLoading&&invoiceTxns.length===0&&(
+                  <div style={{padding:"16px",textAlign:"center",color:"var(--t3)",fontSize:12}}>
+                    No transaction detail available — requires Billing Account Reader access on the specific billing profile.
+                  </div>
+                )}
               </div>
 
               {/* By Tenant */}
