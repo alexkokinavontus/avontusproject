@@ -65,6 +65,41 @@ function DailyLine({days}){
   );
 }
 
+function Pagination({total, page, pageSize, onPage}) {
+  const totalPages = Math.ceil(total / pageSize);
+  if (totalPages <= 1) return null;
+  const start = (page-1)*pageSize+1;
+  const end = Math.min(page*pageSize, total);
+  const pages = [];
+  // Show first, last, current ±2
+  const add = p => { if (p>=1&&p<=totalPages&&!pages.includes(p)) pages.push(p); };
+  [1,2].forEach(add);
+  [page-2,page-1,page,page+1,page+2].forEach(add);
+  [totalPages-1,totalPages].forEach(add);
+  pages.sort((a,b)=>a-b);
+  return (
+    <div className="pgn">
+      <span className="pgn-info">{start}–{end} of {total}</span>
+      <div className="pgn-btns">
+        <button className="pgn-btn" disabled={page===1} onClick={()=>onPage(1)}>«</button>
+        <button className="pgn-btn" disabled={page===1} onClick={()=>onPage(page-1)}>‹</button>
+        {pages.map((p,i) => {
+          const prev = pages[i-1];
+          return [
+            prev && p-prev>1 ? <span key={"e"+p} className="pgn-ellipsis">…</span> : null,
+            <button key={p} className={`pgn-btn${page===p?" pgn-active":""}`} onClick={()=>onPage(p)}>{p}</button>
+          ];
+        })}
+        <button className="pgn-btn" disabled={page===totalPages} onClick={()=>onPage(page+1)}>›</button>
+        <button className="pgn-btn" disabled={page===totalPages} onClick={()=>onPage(totalPages)}>»</button>
+      </div>
+      <select className="pgn-jump" value={page} onChange={e=>onPage(Number(e.target.value))}>
+        {Array.from({length:totalPages},(_,i)=>i+1).map(p=><option key={p} value={p}>Page {p}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function TenantBadge({name,color}){
   return <span className="tbadge" style={{background:color+"22",color,borderColor:color+"44"}}>{name}</span>;
 }
@@ -85,6 +120,10 @@ export default function App(){
   const [search,setSearch]=useState("");
   const [sortDesc,setSortDesc]=useState(true);
   const [progress,setProgress]=useState({i:0,total:0,name:""});
+  const [pages,setPages]=useState({});  // {viewKey: pageNumber}
+  const PAGE_SIZE = 50;
+  const getPage = (key) => pages[key] || 1;
+  const setPage = (key, p) => setPages(prev => ({...prev, [key]: p}));
   const [invoices,setInvoices]=useState(null);
   const [invoicesLoading,setInvoicesLoading]=useState(false);
   const [invoiceFilter,setInvoiceFilter]=useState("all");
@@ -417,7 +456,7 @@ export default function App(){
         </div>
         <nav className="sb-nav">
           {[{id:"overview",ico:"▣",lbl:"Overview"},{id:"tenants",ico:"◈",lbl:"Tenants"},{id:"services",ico:"⬡",lbl:"By Service"},{id:"appsvcs",ico:"⬢",lbl:"App Services"},{id:"subs",ico:"≡",lbl:"Subscriptions"},{id:"breakdown",ico:"⊞",lbl:"Full Breakdown"},{id:"invoices",ico:"🧾",lbl:"Invoices"}].map(v=>(
-            <button key={v.id} className={`sb-item${view===v.id?" on":""}`} onClick={()=>setView(v.id)}>
+            <button key={v.id} className={`sb-item${view===v.id?" on":""}`} onClick={()=>setView(v.id);setPages({})}>
               <span className="sb-ico">{v.ico}</span>{v.lbl}
             </button>
           ))}
@@ -650,7 +689,7 @@ export default function App(){
               <table className="tbl">
                 <thead><tr><th style={{width:28}}/><th>Service</th><th className="r">Cost</th><th className="r">% Total</th><th>Share</th><th className="r">Tenants</th><th className="r">RGs</th></tr></thead>
                 <tbody>
-                  {P.services.map(s=>{
+                  {P.services.slice((getPage("svc")-1)*PAGE_SIZE, getPage("svc")*PAGE_SIZE).map(s=>{
                     const ex=expSvc[s.name];
                     return(<>
                       <tr key={s.name} className={`svc-row${ex?" ex":""}`} onClick={()=>setExpSvc(p=>({...p,[s.name]:!p[s.name]}))}>
@@ -700,6 +739,7 @@ export default function App(){
                   })}
                 </tbody>
               </table>
+              <Pagination total={P.services.length} page={getPage("svc")} pageSize={PAGE_SIZE} onPage={p=>setPage("svc",p)}/>
             </div>
           )}
 
@@ -718,7 +758,7 @@ export default function App(){
                   <table className="tbl">
                     <thead><tr><th style={{width:28}}/><th>Resource Group / Resource</th><th>Tenant</th><th>Subscription</th><th>Type</th><th className="r">Cost</th><th className="r">% of AS</th></tr></thead>
                     <tbody>
-                      {P.asGroups.map(g=>{
+                      {P.asGroups.slice((getPage('as')-1)*PAGE_SIZE, getPage('as')*PAGE_SIZE).map(g=>{
                         const gk=g.subId+"::"+g.rg;const gex=expRg[gk];
                         return(<>
                           <tr key={gk} className={`rg-row${gex?" ex":""}`} onClick={()=>setExpRg(p=>({...p,[gk]:!p[gk]}))}>
@@ -744,6 +784,7 @@ export default function App(){
                       })}
                     </tbody>
                   </table>
+                  <Pagination total={P.asGroups.length} page={getPage("as")} pageSize={PAGE_SIZE} onPage={p=>setPage("as",p)}/>
                 )}
               </div>
             </>
@@ -757,7 +798,7 @@ export default function App(){
                 <table className="tbl">
                   <thead><tr><th>Subscription</th><th>Tenant</th><th className="r">Cost</th><th className="r">App Svcs</th><th className="r">% Total</th><th>Share</th><th className="r">Top Service</th></tr></thead>
                   <tbody>
-                    {P.subs.map((s,i)=>{
+                    {P.subs.slice((getPage('subs')-1)*PAGE_SIZE, getPage('subs')*PAGE_SIZE).map((s,i)=>{
                       const top=Object.entries(s.svcs).sort((a,b)=>b[1]-a[1])[0];
                       return(
                         <tr key={s.id} className="click" onClick={()=>{setSelSubId(s.id);setView("services");}}>
@@ -774,6 +815,7 @@ export default function App(){
                   </tbody>
                 </table>
               </div>
+              <Pagination total={P.subs.length} page={getPage("subcards")} pageSize={PAGE_SIZE} onPage={p=>setPage("subcards",p)}/>
             </>
           )}
 
@@ -784,7 +826,7 @@ export default function App(){
               <table className="tbl">
                 <thead><tr><th>Service</th><th>Tenant</th><th>Subscription</th><th>Resource Group</th><th>Type</th><th className="r">Cost</th></tr></thead>
                 <tbody>
-                  {P.rows.sort((a,b)=>sortDesc?b.cost-a.cost:a.cost-b.cost).slice(0,1000).map((r,i)=>(
+                  {P.rows.sort((a,b)=>sortDesc?b.cost-a.cost:a.cost-b.cost).slice((getPage('bd')-1)*PAGE_SIZE, getPage('bd')*PAGE_SIZE).map((r,i)=>(
                     <tr key={i}>
                       <td><span className="dot" style={{background:P.colorMap[r.service]||"#60a5fa"}}/>{r.service}</td>
                       <td><TenantBadge name={r.tenant.split(" ")[0]} color={r.tenantColor}/></td>
@@ -822,7 +864,7 @@ export default function App(){
                     <div className="inv-filters">
                       <input className="si-in" placeholder="Search invoices…" value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} style={{maxWidth:200}}/>
                       {["all","Paid","Due","PastDue","Void"].map(f=>(
-                        <button key={f} className={`ps${invoiceFilter===f?" on":""}`} onClick={()=>setInvoiceFilter(f)}>
+                        <button key={f} className={`ps${invoiceFilter===f?" on":""}`} onClick={()=>{setInvoiceFilter(f);setPage('inv',1);}}>
                           {f==="all"?"All":f}
                         </button>
                       ))}
@@ -868,7 +910,7 @@ export default function App(){
                         <tbody>
                           {invoices
                             .filter(i=>(invoiceFilter==="all"||i.status===invoiceFilter)&&(!invoiceSearch||i.name?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.subName?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.billingProfileName?.toLowerCase().includes(invoiceSearch.toLowerCase())))
-                            .map((inv,i)=>{
+                            .slice((getPage("inv")-1)*PAGE_SIZE, getPage("inv")*PAGE_SIZE).map((inv,i)=>{
                               const statusColor=inv.status==="Paid"?"var(--green)":inv.status==="PastDue"?"var(--red)":inv.status==="Due"?"var(--amber)":"var(--t3)";
                               const period=inv.periodStart&&inv.periodEnd?`${new Date(inv.periodStart+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})} – ${new Date(inv.periodEnd+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"})}`:inv.invoiceDate?new Date(inv.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",year:"numeric"}):"—";
                               const due=inv.dueDate?new Date(inv.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
@@ -896,6 +938,9 @@ export default function App(){
                             })}
                         </tbody>
                       </table>
+                      <Pagination
+                        total={invoices.filter(i=>(invoiceFilter==="all"||i.status===invoiceFilter)&&(!invoiceSearch||i.name?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.subName?.toLowerCase().includes(invoiceSearch.toLowerCase())||i.billingProfile?.toLowerCase().includes(invoiceSearch.toLowerCase()))).length}
+                        page={getPage("inv")} pageSize={PAGE_SIZE} onPage={p=>setPage("inv",p)}/>
                     </div>
                   )}
                 </>
@@ -975,7 +1020,7 @@ export default function App(){
                       </tr>
                     </thead>
                     <tbody>
-                      {invoiceTxns.map((t,i)=>{
+                      {invoiceTxns.slice((getPage('txn')-1)*50, getPage('txn')*50).map((t,i)=>{
                         const p=t.properties||t;
                         const date=p.date||p.transactionDate||"";
                         const svcStart=p.servicePeriodStartDate||"";
@@ -1005,6 +1050,7 @@ export default function App(){
                       </tr>
                     </tbody>
                   </table>
+                  <Pagination total={invoiceTxns.length} page={getPage("txn")} pageSize={50} onPage={p=>setPage("txn",p)}/>
                 )}
                 {!txnsLoading&&invoiceTxns.length===0&&(
                   <div style={{padding:"16px",textAlign:"center",color:"var(--t3)",fontSize:12}}>
