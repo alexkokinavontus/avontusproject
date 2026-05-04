@@ -156,7 +156,7 @@ export default function App(){
     doc.rect(0,0,W,40,"F");
     doc.setTextColor(255,255,255);
     doc.setFontSize(20);doc.setFont("helvetica","bold");
-    doc.text("AzureReader",margin,18);
+    doc.text("Avontus Accounting Portal",margin,18);
     doc.setFontSize(10);doc.setFont("helvetica","normal");
     doc.text("Azure Cost Statement",margin,26);
     doc.setFontSize(14);doc.setFont("helvetica","bold");
@@ -355,7 +355,7 @@ export default function App(){
     <div className="splash">
       <div className="login-card">
         <div className="lc-logo"><div className="sp-logo" style={{width:52,height:52,fontSize:26}}>A</div></div>
-        <div className="lc-title">AzureReader</div>
+        <div className="lc-title">Avontus Accounting Portal</div>
         <div className="lc-sub">Sign in with your Microsoft account to access the Azure Cost Dashboard</div>
         <button className="lc-btn" onClick={handleSignIn}>
           <svg width="20" height="20" viewBox="0 0 23 23" style={{flexShrink:0}}><path fill="#f25022" d="M0 0h11v11H0z"/><path fill="#00a4ef" d="M12 0h11v11H12z"/><path fill="#7fba00" d="M0 12h11v11H0z"/><path fill="#ffb900" d="M12 12h11v11H12z"/></svg>
@@ -399,7 +399,7 @@ export default function App(){
       <aside className="sidebar">
         <div className="sb-brand">
           <div className="sb-mark">A</div>
-          <div><div className="sb-name">AzureReader</div><div className="sb-ten">4 tenants · 14 subs</div></div>
+          <div><div className="sb-name">Avontus Accounting Portal</div><div className="sb-ten">4 tenants · 14 subs</div></div>
         </div>
         <nav className="sb-nav">
           {[{id:"overview",ico:"▣",lbl:"Overview"},{id:"tenants",ico:"◈",lbl:"Tenants"},{id:"services",ico:"⬡",lbl:"By Service"},{id:"appsvcs",ico:"⬢",lbl:"App Services"},{id:"subs",ico:"≡",lbl:"Subscriptions"},{id:"breakdown",ico:"⊞",lbl:"Full Breakdown"},{id:"invoices",ico:"🧾",lbl:"Invoices"}].map(v=>(
