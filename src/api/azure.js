@@ -225,54 +225,79 @@ function normalizeBillingAccountInvoice(inv, tenant) {
 export async function fetchAllInvoices(subscriptions, tenants) {
   const allInvoices = [];
   const userToken = await getUserMgmtToken();
-  const avontusTenant = tenants.find(t => t.name === 'Avontus Software') || tenants[0];
 
-  // Fetch from all known billing accounts with date range (last 2 years)
   const now = new Date();
   const startDate = new Date(now.getFullYear() - 2, 0, 1).toISOString().slice(0, 10);
   const endDate = now.toISOString().slice(0, 10);
 
-  for (const ba of BILLING_ACCOUNTS) {
+  // Fetch invoices for every tenant
+  for (const tenant of tenants) {
     try {
-      const res = await proxyGet(
-        avontusTenant.id,
-        `providers/Microsoft.Billing/billingAccounts/${ba}/invoices`,
-        `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
-        userToken
-      );
-      const invoices = res.value || [];
-      invoices.forEach(inv => {
-        allInvoices.push(normalizeBillingAccountInvoice(inv, avontusTenant));
-      });
-      if (invoices.length > 0) {
-        console.log(`Found ${invoices.length} invoices in billing account ${ba.slice(-20)}`);
+      // Get all billing accounts for this tenant
+      let billingAccounts = [];
+      if (tenant.name === 'Avontus Software') {
+        // Use hardcoded known billing accounts for Avontus
+        billingAccounts = BILLING_ACCOUNTS.map(name => ({ name, tenantId: tenant.id }));
+      } else {
+        try {
+          const baRes = await proxyGet(tenant.id, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01', userToken);
+          billingAccounts = (baRes.value || []).map(ba => ({ name: ba.name, tenantId: tenant.id }));
+        } catch(e) { /* no access */ }
+      }
+
+      for (const ba of billingAccounts) {
+        // 1. Get invoices at billing account level
+        try {
+          const res = await proxyGet(
+            tenant.id,
+            `providers/Microsoft.Billing/billingAccounts/${ba.name}/invoices`,
+            `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
+            userToken
+          );
+          (res.value || []).forEach(inv => {
+            allInvoices.push({ ...normalizeBillingAccountInvoice(inv, tenant), billingAccountName: ba.name });
+          });
+        } catch(e) { console.warn('BA invoices failed:', e.message); }
+        await sleep(200);
+
+        // 2. Get billing profiles and their invoices (catches invoices like G151448138)
+        try {
+          const profilesRes = await proxyGet(
+            tenant.id,
+            `providers/Microsoft.Billing/billingAccounts/${ba.name}/billingProfiles`,
+            '2020-05-01',
+            userToken
+          );
+          for (const profile of profilesRes.value || []) {
+            try {
+              const profInvRes = await proxyGet(
+                tenant.id,
+                `providers/Microsoft.Billing/billingAccounts/${ba.name}/billingProfiles/${profile.name}/invoices`,
+                `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
+                userToken
+              );
+              (profInvRes.value || []).forEach(inv => {
+                const p = inv.properties || {};
+                // Override billingProfile name with the actual profile
+                allInvoices.push({
+                  ...normalizeBillingAccountInvoice(inv, tenant),
+                  billingAccountName: ba.name,
+                  billingProfileName: profile.name,
+                  billingProfile: p.billingProfileDisplayName || profile.properties?.displayName || profile.name,
+                  subName: profile.properties?.displayName || profile.name,
+                });
+              });
+            } catch(e) { /* skip profile */ }
+            await sleep(150);
+          }
+        } catch(e) { /* no profile access */ }
       }
     } catch(e) {
-      console.warn(`Billing account ${ba.slice(-20)} failed:`, e.message);
+      console.warn(`Tenant ${tenant.name} invoices failed:`, e.message);
     }
-    await sleep(300);
   }
 
-  // Also try other tenants' billing accounts
-  for (const tenant of tenants.filter(t => t.id !== avontusTenant.id)) {
-    try {
-      const baRes = await proxyGet(tenant.id, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01', userToken);
-      for (const ba of baRes.value || []) {
-        const res = await proxyGet(
-          tenant.id,
-          `providers/Microsoft.Billing/billingAccounts/${ba.name}/invoices`,
-          `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
-          userToken
-        );
-        (res.value || []).forEach(inv => {
-          allInvoices.push(normalizeBillingAccountInvoice(inv, tenant));
-        });
-        await sleep(300);
-      }
-    } catch(e) { /* skip */ }
-  }
-
-  // Deduplicate and sort newest first
+  // Deduplicate by invoice ID and sort newest first
   const seen = new Set();
   return allInvoices
     .filter(i => { if (seen.has(i.id)) return false; seen.add(i.id); return true; })
@@ -280,19 +305,37 @@ export async function fetchAllInvoices(subscriptions, tenants) {
 }
 
 // ── Invoice Transactions ──────────────────────────────────────────────────────
-export async function fetchInvoiceTransactions(invoiceId, billingAccountId, userToken) {
-  // Try billing account invoice transactions endpoint
-  const BA = billingAccountId || BILLING_ACCOUNTS[0];
-  try {
-    const res = await proxyGet(
-      'bd98204b-b981-4d03-8796-356d537927eb',
-      `providers/Microsoft.Billing/billingAccounts/${BA}/invoices/${invoiceId}/transactions`,
-      '2020-05-01',
-      userToken
-    );
-    return res.value || [];
-  } catch(e) {
-    console.warn('transactions failed:', e.message);
-    return [];
+export async function fetchInvoiceTransactions(inv, userToken) {
+  const tenantId = inv.tenantId || 'bd98204b-b981-4d03-8796-356d537927eb';
+  const invoiceId = inv.name || inv.id;
+  const results = [];
+
+  // Try billing profile path first (MCA accounts)
+  if (inv.billingAccountName && inv.billingProfileName) {
+    try {
+      const res = await proxyGet(
+        tenantId,
+        `providers/Microsoft.Billing/billingAccounts/${inv.billingAccountName}/billingProfiles/${inv.billingProfileName}/invoices/${invoiceId}/transactions`,
+        '2020-05-01',
+        userToken
+      );
+      if ((res.value || []).length > 0) return res.value;
+    } catch(e) { console.warn('profile txn failed:', e.message); }
   }
+
+  // Try direct billing account path
+  for (const BA of inv.billingAccountName ? [inv.billingAccountName] : BILLING_ACCOUNTS) {
+    try {
+      const res = await proxyGet(
+        tenantId,
+        `providers/Microsoft.Billing/billingAccounts/${BA}/invoices/${invoiceId}/transactions`,
+        '2020-05-01',
+        userToken
+      );
+      if ((res.value || []).length > 0) return res.value;
+    } catch(e) { /* try next */ }
+    await sleep(200);
+  }
+
+  return [];
 }
