@@ -166,47 +166,57 @@ export async function fetchAllData(start, end, onProgress) {
 
 
 
+
 // ── Invoices ─────────────────────────────────────────────────────────────────
-// Fetches real Microsoft invoices per subscription
-// Matches exactly what Azure Portal shows under Billing > Invoices
+// Confirmed field structure from live API:
+// amountDue, billedAmount, billingProfileDisplayName, documents[{kind,url}],
+// dueDate, invoiceDate, invoicePeriodStartDate, invoicePeriodEndDate,
+// isMonthlyInvoice, payments[], status, subTotal, taxAmount, totalAmount
 
-async function tryBillingAccountInvoices(tenantId, billingAccountName, userToken) {
-  try {
-    const res = await proxyGet(tenantId,
-      `providers/Microsoft.Billing/billingAccounts/${billingAccountName}/invoices`,
-      '2020-05-01', userToken
-    );
-    return res.value || [];
-  } catch(e) { return []; }
-}
+const BILLING_ACCOUNTS = [
+  "6598a801-67b3-5760-fd9c-b6559890b00e:180c8926-382d-41a9-a1da-8eae6ee475ae_2019-05-31",
+  "6598a801-67b3-5760-fd9c-b6559890b00e:729679fa-ac97-4460-a0f5-090bd55ea2b6_2019-05-31",
+  "6598a801-67b3-5760-fd9c-b6559890b00e:7a95c33a-18e4-4bb3-91b2-83121e02bb41_2019-05-31",
+  "6598a801-67b3-5760-fd9c-b6559890b00e:f41edd95-cb04-4d47-a6f3-97941354cd28_2019-05-31",
+];
 
-function normalizeSubInvoice(inv, sub, tenant) {
+function normalizeBillingAccountInvoice(inv, tenant) {
   const p = inv.properties || {};
+  const downloadDoc = (p.documents || []).find(d => d.kind === 'Invoice') || (p.documents || [])[0];
+  const payment = (p.payments || [])[0];
   return {
     id: inv.name,
     name: inv.name,
     type: 'azure-invoice',
-    source: 'subscription',
+    source: 'billing-account',
     status: p.status || 'Unknown',
-    invoiceDate: p.invoiceDate || '',
-    periodStart: p.billingPeriodStartDate || p.invoicePeriodStartDate || '',
-    periodEnd: p.billingPeriodEndDate || p.invoicePeriodEndDate || '',
-    dueDate: p.dueDate || '',
+    invoiceDate: p.invoiceDate ? p.invoiceDate.slice(0, 10) : '',
+    periodStart: p.invoicePeriodStartDate ? p.invoicePeriodStartDate.slice(0, 10) : '',
+    periodEnd: p.invoicePeriodEndDate ? p.invoicePeriodEndDate.slice(0, 10) : '',
+    dueDate: p.dueDate ? p.dueDate.slice(0, 10) : '',
+    // Real amounts
     amountDue: p.amountDue?.value ?? 0,
-    totalAmount: p.totalAmount?.value ?? p.amountDue?.value ?? 0,
-    amount: p.totalAmount?.value ?? p.amountDue?.value ?? 0,
-    currency: p.amountDue?.currency ?? p.totalAmount?.currency ?? 'USD',
-    downloadUrl: p.invoiceDocuments?.find(d => d.kind === 'Invoice' || d.kind === 'invoice')?.url
-              || p.invoiceDocuments?.[0]?.url
-              || null,
-    invoiceType: p.invoiceType || 'AzureServices',
-    subName: sub?.displayName || '',
-    subId: sub?.subscriptionId || '',
-    tenant: tenant?.name || '',
+    billedAmount: p.billedAmount?.value ?? 0,
+    subTotal: p.subTotal?.value ?? 0,
+    taxAmount: p.taxAmount?.value ?? 0,
+    totalAmount: p.totalAmount?.value ?? p.billedAmount?.value ?? 0,
+    amount: p.totalAmount?.value ?? p.billedAmount?.value ?? 0,
+    currency: p.amountDue?.currency ?? 'USD',
+    // Download URL - direct from documents array
+    downloadUrl: downloadDoc?.url || null,
+    documentType: p.documentType || 'Invoice',
+    isMonthly: p.isMonthlyInvoice || false,
+    billingProfile: p.billingProfileDisplayName || '',
+    // Payment info
+    paymentMethod: payment ? `${payment.paymentMethodType || payment.paymentMethodFamily || ''}`.trim() : '',
+    paymentDate: payment?.date ? payment.date.slice(0, 10) : '',
+    paymentAmount: payment?.amount?.value ?? 0,
+    // Tenant info
+    tenant: tenant?.name || 'Avontus Software',
     tenantColor: tenant?.color || '#60a5fa',
     tenantId: tenant?.id || '',
-    documents: p.invoiceDocuments || [],
-    // keep bySub/byTenant empty for real invoices
+    subName: p.billingProfileDisplayName || '',
+    documents: p.documents || [],
     bySub: null,
     byTenant: null,
   };
@@ -215,70 +225,56 @@ function normalizeSubInvoice(inv, sub, tenant) {
 export async function fetchAllInvoices(subscriptions, tenants) {
   const allInvoices = [];
   const userToken = await getUserMgmtToken();
+  const avontusTenant = tenants.find(t => t.name === 'Avontus Software') || tenants[0];
 
-  // Fetch real invoices for every subscription
-  for (const sub of subscriptions) {
-    const tenantId = sub.tenantId || sub.tenant?.id || tenants[0].id;
-    const tenant = tenants.find(t => t.id === tenantId);
+  // Fetch from all known billing accounts with date range (last 2 years)
+  const now = new Date();
+  const startDate = new Date(now.getFullYear() - 2, 0, 1).toISOString().slice(0, 10);
+  const endDate = now.toISOString().slice(0, 10);
+
+  for (const ba of BILLING_ACCOUNTS) {
     try {
       const res = await proxyGet(
-        tenantId,
-        `subscriptions/${sub.subscriptionId}/providers/Microsoft.Billing/invoices`,
-        '2020-05-01',
+        avontusTenant.id,
+        `providers/Microsoft.Billing/billingAccounts/${ba}/invoices`,
+        `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
         userToken
       );
       const invoices = res.value || [];
       invoices.forEach(inv => {
-        allInvoices.push(normalizeSubInvoice(inv, sub, tenant));
+        allInvoices.push(normalizeBillingAccountInvoice(inv, avontusTenant));
       });
+      if (invoices.length > 0) {
+        console.log(`Found ${invoices.length} invoices in billing account ${ba.slice(-20)}`);
+      }
     } catch(e) {
-      console.warn(`Invoices failed for ${sub.displayName}:`, e.message);
+      console.warn(`Billing account ${ba.slice(-20)} failed:`, e.message);
     }
     await sleep(300);
   }
 
-  // Also try billing account level
-  for (const tenant of tenants) {
+  // Also try other tenants' billing accounts
+  for (const tenant of tenants.filter(t => t.id !== avontusTenant.id)) {
     try {
       const baRes = await proxyGet(tenant.id, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01', userToken);
       for (const ba of baRes.value || []) {
-        const invs = await tryBillingAccountInvoices(tenant.id, ba.name, userToken);
-        invs.forEach(inv => {
-          const p = inv.properties || {};
-          // Only add if not already present
-          if (!allInvoices.find(i => i.name === inv.name)) {
-            allInvoices.push({
-              id: inv.name,
-              name: inv.name,
-              type: 'azure-invoice',
-              source: 'billing-account',
-              status: p.status || 'Unknown',
-              invoiceDate: p.invoiceDate || '',
-              periodStart: p.invoicePeriodStartDate || '',
-              periodEnd: p.invoicePeriodEndDate || '',
-              dueDate: p.dueDate || '',
-              amountDue: p.amountDue?.value ?? 0,
-              totalAmount: p.totalAmount?.value ?? p.amountDue?.value ?? 0,
-              amount: p.totalAmount?.value ?? p.amountDue?.value ?? 0,
-              currency: p.amountDue?.currency ?? 'USD',
-              downloadUrl: p.invoiceDocuments?.find(d => d.kind === 'Invoice')?.url || p.invoiceDocuments?.[0]?.url || null,
-              subName: ba.properties?.displayName || ba.name,
-              tenant: tenant.name,
-              tenantColor: tenant.color,
-              tenantId: tenant.id,
-              documents: p.invoiceDocuments || [],
-              bySub: null,
-              byTenant: null,
-            });
-          }
+        const res = await proxyGet(
+          tenant.id,
+          `providers/Microsoft.Billing/billingAccounts/${ba.name}/invoices`,
+          `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
+          userToken
+        );
+        (res.value || []).forEach(inv => {
+          allInvoices.push(normalizeBillingAccountInvoice(inv, tenant));
         });
         await sleep(300);
       }
-    } catch(e) { /* no billing account access */ }
+    } catch(e) { /* skip */ }
   }
 
-  // Sort by invoice date descending (newest first)
-  return allInvoices.sort((a, b) =>
-    (b.invoiceDate || b.periodEnd || '').localeCompare(a.invoiceDate || a.periodEnd || '')
-  );
+  // Deduplicate and sort newest first
+  const seen = new Set();
+  return allInvoices
+    .filter(i => { if (seen.has(i.id)) return false; seen.add(i.id); return true; })
+    .sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''));
 }
