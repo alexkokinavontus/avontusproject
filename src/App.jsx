@@ -800,9 +800,10 @@ export default function App(){
                   <div className="inv-toolbar">
                     <div className="inv-stats">
                       <div className="inv-stat"><span>Total invoices</span><strong>{invoices.length}</strong></div>
-                      <div className="inv-stat"><span>Total billed</span><strong>{fmt(invoices.reduce((s,i)=>s+(i.totalAmount||i.amount||0),0),2)}</strong></div>
-                      <div className="inv-stat"><span>Amount due</span><strong style={{color:"var(--red)"}}>{fmt(invoices.reduce((s,i)=>s+(i.amountDue||0),0),2)}</strong></div>
-                      <div className="inv-stat"><span>Paid</span><strong style={{color:"var(--green)"}}>{fmt(invoices.filter(i=>i.status==="Paid").reduce((s,i)=>s+(i.totalAmount||i.amount||0),0),2)}</strong></div>
+                      <div className="inv-stat"><span>Total billed</span><strong>{fmt(invoices.reduce((s,i)=>s+(i.totalAmount||0),0),2)}</strong></div>
+                      <div className="inv-stat"><span>Tax</span><strong>{fmt(invoices.reduce((s,i)=>s+(i.taxAmount||0),0),2)}</strong></div>
+                      <div className="inv-stat"><span>Amount due</span><strong style={{color:invoices.reduce((s,i)=>s+(i.amountDue||0),0)>0?"var(--red)":"var(--green)"}}>{fmt(invoices.reduce((s,i)=>s+(i.amountDue||0),0),2)}</strong></div>
+                      <div className="inv-stat"><span>Paid</span><strong style={{color:"var(--green)"}}>{fmt(invoices.filter(i=>i.status==="Paid").reduce((s,i)=>s+(i.totalAmount||0),0),2)}</strong></div>
                     </div>
                     <div className="inv-filters">
                       <input className="si-in" placeholder="Search invoices…" value={invoiceSearch} onChange={e=>setInvoiceSearch(e.target.value)} style={{maxWidth:200}}/>
@@ -839,12 +840,13 @@ export default function App(){
                         <thead>
                           <tr>
                             <th>Invoice ID</th>
-                            <th>Tenant</th>
-                            <th>Subscription</th>
-                            <th>Billing Period</th>
+                            <th>Billing Profile</th>
                             <th>Invoice Date</th>
+                            <th>Period</th>
                             <th>Status</th>
-                            <th className="r">Total Amount</th>
+                            <th className="r">Subtotal</th>
+                            <th className="r">Tax</th>
+                            <th className="r">Total</th>
                             <th className="r">Amount Due</th>
                             <th className="r">Actions</th>
                           </tr>
@@ -858,27 +860,25 @@ export default function App(){
                               const due=inv.dueDate?new Date(inv.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—";
                               return(
                                 <tr key={i} className={`inv-row${inv.status==="PastDue"?" inv-overdue":""}`} onClick={()=>setSelectedInvoice(inv)}>
-                                  <td>
-                                    <span className="inv-id">{inv.name||inv.id}</span>
-                                    {inv.invoiceType&&inv.invoiceType!=="AzureServices"&&<span className="inv-type-badge">{inv.invoiceType}</span>}
-                                  </td>
-                                  <td><TenantBadge name={inv.tenant?.split(" ")[0]||"?"} color={inv.tenantColor||"#60a5fa"}/></td>
-                                  <td className="dim" style={{fontSize:11,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.subName||"—"}</td>
+                                  <td><span className="inv-id">{inv.name||inv.id}</span></td>
+                                  <td className="dim" style={{fontSize:11}}>{inv.billingProfile||inv.subName||"—"}</td>
+                                  <td className="dim" style={{fontSize:11}}>{inv.invoiceDate?new Date(inv.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—"}</td>
                                   <td className="dim" style={{fontSize:11}}>{period}</td>
-                                  <td className="dim" style={{fontSize:11}}>{inv.invoiceDate?new Date(inv.invoiceDate).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—"}</td>
                                   <td>
                                     <span className="inv-status" style={{color:statusColor,background:statusColor+"18",borderColor:statusColor+"33"}}>
                                       {inv.status==="Paid"?"✓ ":inv.status==="PastDue"?"⚠ ":""}{inv.status}
                                     </span>
                                   </td>
-                                  <td className="r mono hi">{fmt(inv.totalAmount||inv.amount,2)} <span className="dim" style={{fontSize:10}}>{inv.currency}</span></td>
+                                  <td className="r mono dim">{fmt(inv.subTotal||0,2)}</td>
+                                  <td className="r mono dim">{fmt(inv.taxAmount||0,2)}</td>
+                                  <td className="r mono hi">{fmt(inv.totalAmount||0,2)}</td>
                                   <td className="r mono" style={{color:inv.amountDue>0?"var(--red)":"var(--green)"}}>{fmt(inv.amountDue||0,2)}</td>
                                   <td className="r" style={{display:"flex",gap:5,justifyContent:"flex-end",alignItems:"center"}}>
                                     <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();setSelectedInvoice(inv);}}>👁</button>
                                     {inv.downloadUrl?(
-                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn inv-dl-real" onClick={e=>e.stopPropagation()} title="Download official invoice PDF">↓ PDF</a>
+                                      <a href={inv.downloadUrl} target="_blank" rel="noopener noreferrer" className="inv-dl-btn inv-dl-real" onClick={e=>e.stopPropagation()} title="Download official Microsoft invoice PDF">↓ PDF</a>
                                     ):(
-                                      <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}} title="Export statement as PDF">↓ Export</button>
+                                      <button className="inv-dl-btn" onClick={e=>{e.stopPropagation();exportInvoicePDF(inv);}} title="Export as PDF">↓ Export</button>
                                     )}
                                   </td>
                                 </tr>
@@ -922,13 +922,26 @@ export default function App(){
             <div className="inv-modal-body">
               {/* Summary */}
               <div className="inv-summary-cards">
-                <div className="inv-sc blue"><div className="inv-sc-l">Total Amount</div><div className="inv-sc-v">{fmt(selectedInvoice.amount,2)}</div><div className="inv-sc-s">{selectedInvoice.currency}</div></div>
-                <div className="inv-sc" style={{"--ac":selectedInvoice.status==="Closed"||selectedInvoice.status==="Paid"?"var(--green)":selectedInvoice.status==="Current"?"var(--blue)":"var(--amber)"}}>
-                  <div className="inv-sc-l">Status</div>
-                  <div className="inv-sc-v" style={{fontSize:20,color:selectedInvoice.status==="Closed"||selectedInvoice.status==="Paid"?"var(--green)":selectedInvoice.status==="Current"?"var(--blue)":"var(--amber)"}}>{selectedInvoice.status}</div>
+                <div className="inv-sc blue"><div className="inv-sc-l">Total Amount</div><div className="inv-sc-v">{fmt(selectedInvoice.totalAmount||0,2)}</div><div className="inv-sc-s">{selectedInvoice.currency}</div></div>
+                <div className="inv-sc amber"><div className="inv-sc-l">Subtotal</div><div className="inv-sc-v">{fmt(selectedInvoice.subTotal||0,2)}</div><div className="inv-sc-s">Before tax</div></div>
+                <div className="inv-sc" style={{"--ac":"var(--t3)"}}><div className="inv-sc-l">Tax</div><div className="inv-sc-v">{fmt(selectedInvoice.taxAmount||0,2)}</div><div className="inv-sc-s">{selectedInvoice.currency}</div></div>
+                <div className="inv-sc" style={{"--ac":selectedInvoice.amountDue>0?"var(--red)":"var(--green)"}}>
+                  <div className="inv-sc-l">Amount Due</div>
+                  <div className="inv-sc-v" style={{color:selectedInvoice.amountDue>0?"var(--red)":"var(--green)"}}>{fmt(selectedInvoice.amountDue||0,2)}</div>
+                  <div className="inv-sc-s">{selectedInvoice.amountDue>0?"Outstanding":"Paid"}</div>
                 </div>
-                <div className="inv-sc green"><div className="inv-sc-l">Subscriptions</div><div className="inv-sc-v">{Object.keys(selectedInvoice.bySub||{}).length||"—"}</div></div>
-                <div className="inv-sc amber"><div className="inv-sc-l">Tenants</div><div className="inv-sc-v">{Object.keys(selectedInvoice.byTenant||{}).length||"—"}</div></div>
+              </div>
+
+              {/* Invoice details */}
+              <div className="inv-detail-grid">
+                <div className="inv-detail-item"><span>Invoice ID</span><strong className="inv-id">{selectedInvoice.name}</strong></div>
+                <div className="inv-detail-item"><span>Status</span><strong style={{color:selectedInvoice.status==="Paid"?"var(--green)":"var(--red)"}}>{selectedInvoice.status}</strong></div>
+                <div className="inv-detail-item"><span>Invoice Date</span><strong>{selectedInvoice.invoiceDate?new Date(selectedInvoice.invoiceDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}):"—"}</strong></div>
+                <div className="inv-detail-item"><span>Due Date</span><strong>{selectedInvoice.dueDate?new Date(selectedInvoice.dueDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}):"—"}</strong></div>
+                <div className="inv-detail-item"><span>Billing Period</span><strong>{selectedInvoice.periodStart} – {selectedInvoice.periodEnd}</strong></div>
+                <div className="inv-detail-item"><span>Billing Profile</span><strong>{selectedInvoice.billingProfile||"—"}</strong></div>
+                {selectedInvoice.paymentMethod&&<div className="inv-detail-item"><span>Payment Method</span><strong>{selectedInvoice.paymentMethod}</strong></div>}
+                {selectedInvoice.paymentDate&&<div className="inv-detail-item"><span>Payment Date</span><strong>{new Date(selectedInvoice.paymentDate+"T12:00:00Z").toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</strong></div>}
               </div>
 
               {/* By Tenant */}
