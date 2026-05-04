@@ -1,7 +1,7 @@
 // Multi-tenant Azure Cost Management API
 // 4 tenants, 14 subscriptions
 
-import { getUserMgmtToken } from '../auth/msal';
+import { getUserMgmtToken, getAllTenantTokens } from '../auth/msal';
 
 const BASE = 'https://azurereader-api.azurewebsites.net/api/proxy';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -224,87 +224,99 @@ function normalizeBillingAccountInvoice(inv, tenant) {
 
 export async function fetchAllInvoices(subscriptions, tenants) {
   const allInvoices = [];
-  const userToken = await getUserMgmtToken();
+
+  // Get tokens for all tenants simultaneously
+  const tenantTokens = await getAllTenantTokens();
+  console.log('Got tokens for tenants:', Object.keys(tenantTokens).map(t => t.slice(0,8)));
 
   const now = new Date();
   const startDate = new Date(now.getFullYear() - 2, 0, 1).toISOString().slice(0, 10);
   const endDate = now.toISOString().slice(0, 10);
 
-  // Fetch invoices for every tenant
+  // For each tenant, fetch billing accounts and their profile invoices
   for (const tenant of tenants) {
+    const userToken = tenantTokens[tenant.id] || null;
+    if (!userToken) {
+      console.warn(`No token for tenant ${tenant.name} — skipping`);
+      continue;
+    }
+
     try {
-      // Get all billing accounts for this tenant
+      // Get billing accounts for this tenant
       let billingAccounts = [];
       if (tenant.name === 'Avontus Software') {
-        // Use hardcoded known billing accounts for Avontus
-        billingAccounts = BILLING_ACCOUNTS.map(name => ({ name, tenantId: tenant.id }));
+        billingAccounts = BILLING_ACCOUNTS.map(name => ({ name }));
       } else {
         try {
-          const baRes = await proxyGet(tenant.id, 'providers/Microsoft.Billing/billingAccounts', '2020-05-01', userToken);
-          billingAccounts = (baRes.value || []).map(ba => ({ name: ba.name, tenantId: tenant.id }));
-        } catch(e) { /* no access */ }
+          const baRes = await proxyGet(tenant.id,
+            'providers/Microsoft.Billing/billingAccounts',
+            '2020-05-01', userToken
+          );
+          billingAccounts = (baRes.value || []).map(ba => ({ name: ba.name }));
+          console.log(`${tenant.name}: found ${billingAccounts.length} billing accounts`);
+        } catch(e) { console.warn(`${tenant.name} BA list failed:`, e.message); }
       }
 
       for (const ba of billingAccounts) {
-        // 1. Get invoices at billing account level
+        // Get billing profiles
         try {
-          const res = await proxyGet(
-            tenant.id,
-            `providers/Microsoft.Billing/billingAccounts/${ba.name}/invoices`,
-            `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
-            userToken
-          );
-          (res.value || []).forEach(inv => {
-            allInvoices.push({ ...normalizeBillingAccountInvoice(inv, tenant), billingAccountName: ba.name });
-          });
-        } catch(e) { console.warn('BA invoices failed:', e.message); }
-        await sleep(200);
-
-        // 2. Get billing profiles and their invoices (catches invoices like G151448138)
-        try {
-          const profilesRes = await proxyGet(
-            tenant.id,
+          const profilesRes = await proxyGet(tenant.id,
             `providers/Microsoft.Billing/billingAccounts/${ba.name}/billingProfiles`,
-            '2020-05-01',
-            userToken
+            '2020-05-01', userToken
           );
+
           for (const profile of profilesRes.value || []) {
             try {
-              const profInvRes = await proxyGet(
-                tenant.id,
+              const res = await proxyGet(tenant.id,
                 `providers/Microsoft.Billing/billingAccounts/${ba.name}/billingProfiles/${profile.name}/invoices`,
                 `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
                 userToken
               );
-              (profInvRes.value || []).forEach(inv => {
-                const p = inv.properties || {};
-                // Override billingProfile name with the actual profile
+              (res.value || []).forEach(inv => {
                 allInvoices.push({
                   ...normalizeBillingAccountInvoice(inv, tenant),
                   billingAccountName: ba.name,
                   billingProfileName: profile.name,
-                  billingProfile: p.billingProfileDisplayName || profile.properties?.displayName || profile.name,
+                  billingProfile: profile.properties?.displayName || profile.name,
                   subName: profile.properties?.displayName || profile.name,
                 });
               });
             } catch(e) { /* skip profile */ }
-            await sleep(150);
+            await sleep(100);
           }
-        } catch(e) { /* no profile access */ }
+        } catch(e) {
+          // No profile access — try billing account level directly
+          try {
+            const res = await proxyGet(tenant.id,
+              `providers/Microsoft.Billing/billingAccounts/${ba.name}/invoices`,
+              `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
+              userToken
+            );
+            (res.value || []).forEach(inv => {
+              allInvoices.push({
+                ...normalizeBillingAccountInvoice(inv, tenant),
+                billingAccountName: ba.name,
+              });
+            });
+          } catch(e2) { /* skip */ }
+        }
+        await sleep(150);
       }
     } catch(e) {
-      console.warn(`Tenant ${tenant.name} invoices failed:`, e.message);
+      console.warn(`Tenant ${tenant.name} invoice fetch failed:`, e.message);
     }
   }
 
-  // Deduplicate by invoice ID and sort newest first
+  console.log(`Total invoices found: ${allInvoices.length}`);
+
+  // Deduplicate and sort newest first
   const seen = new Set();
   return allInvoices
     .filter(i => { if (seen.has(i.id)) return false; seen.add(i.id); return true; })
     .sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''));
 }
 
-// ── Invoice Transactions ──────────────────────────────────────────────────────
+
 export async function fetchInvoiceTransactions(inv, userToken) {
   const tenantId = inv.tenantId || 'bd98204b-b981-4d03-8796-356d537927eb';
   const invoiceId = inv.name || inv.id;
