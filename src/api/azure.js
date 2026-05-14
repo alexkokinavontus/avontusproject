@@ -107,14 +107,16 @@ export async function listSubscriptions() {
 
 // Fetch a single subscription — detailed + monthly + daily sequentially
 // (sequential within sub to avoid hammering the same endpoint)
+// Sequential fetching — proxy handles 429 retries server-side
+// Client just needs to pace requests to avoid flooding
 async function fetchOneSub(sub, start, end) {
   const sid = sub.subscriptionId;
   const tenant = sub.tenant || TENANTS[0];
+  const costPath = `subscriptions/${sid}/providers/Microsoft.CostManagement/query`;
   const cacheKey = `cost:${sid}:${start}:${end}`;
   const cached = cacheGet(cacheKey);
   if (cached) return { sub, ...cached };
 
-  const costPath = `subscriptions/${sid}/providers/Microsoft.CostManagement/query`;
   const makeBody = (granularity, grouping) => ({
     type: 'ActualCost', timeframe: 'Custom', timePeriod: { from: start, to: end },
     dataset: {
@@ -134,15 +136,14 @@ async function fetchOneSub(sub, start, end) {
     ]));
     detRows = parseRows(det, sub, tenant);
   } catch(e) { console.warn('det failed:', sub.displayName, e.message); }
-
-  await sleep(300); // small gap between queries to same sub
+  await sleep(400);
 
   try {
-    const mon = await proxyPost(costPath, makeBody('Monthly', [{ type: 'Dimension', name: 'ServiceName' }]));
+    const mon = await proxyPost(costPath,
+      makeBody('Monthly', [{ type: 'Dimension', name: 'ServiceName' }]));
     monRows = parseRows(mon, sub, tenant);
   } catch(e) { console.warn('mon failed:', sub.displayName, e.message); }
-
-  await sleep(300);
+  await sleep(400);
 
   try {
     const day = await proxyPost(costPath, makeBody('Daily'));
@@ -157,13 +158,10 @@ async function fetchOneSub(sub, start, end) {
 export async function fetchAllData(start, end, onProgress) {
   const subscriptions = await listSubscriptions();
   const allDetailed = [], allMonthly = [], allDaily = [], errors = [];
-  let completed = 0;
 
-  // 2 concurrent subscriptions — stays well under Azure's rate limit
-  // Each sub makes 3 sequential queries with 300ms gaps
-  // 2 subs × 3 queries = 6 in-flight at once max, but staggered
-  await withConcurrency(subscriptions, 2, async (sub) => {
-    if (onProgress) onProgress(completed, subscriptions.length, sub.displayName);
+  for (let i = 0; i < subscriptions.length; i++) {
+    const sub = subscriptions[i];
+    if (onProgress) onProgress(i, subscriptions.length, sub.displayName);
     try {
       const result = await fetchOneSub(sub, start, end);
       allDetailed.push(...result.detRows);
@@ -172,51 +170,11 @@ export async function fetchAllData(start, end, onProgress) {
     } catch(e) {
       errors.push(`${sub.displayName}: ${e.message}`);
     }
-    completed++;
-    if (onProgress) onProgress(completed, subscriptions.length, sub.displayName);
-  });
+    // Small gap between subs — proxy handles per-request retries
+    if (i < subscriptions.length - 1) await sleep(600);
+  }
 
   return { subscriptions, tenants: TENANTS, allDetailed, allMonthly, allDaily, errors };
-}
-
-// ── Invoices ──────────────────────────────────────────────────────────────────
-const BILLING_ACCOUNTS = [
-  "6598a801-67b3-5760-fd9c-b6559890b00e:180c8926-382d-41a9-a1da-8eae6ee475ae_2019-05-31",
-  "6598a801-67b3-5760-fd9c-b6559890b00e:729679fa-ac97-4460-a0f5-090bd55ea2b6_2019-05-31",
-  "6598a801-67b3-5760-fd9c-b6559890b00e:7a95c33a-18e4-4bb3-91b2-83121e02bb41_2019-05-31",
-  "6598a801-67b3-5760-fd9c-b6559890b00e:f41edd95-cb04-4d47-a6f3-97941354cd28_2019-05-31",
-];
-
-function normalizeBillingAccountInvoice(inv, tenant) {
-  const p = inv.properties || {};
-  const downloadDoc = (p.documents || []).find(d => d.kind === 'Invoice') || (p.documents || [])[0];
-  const payment = (p.payments || [])[0];
-  return {
-    id: inv.name, name: inv.name, type: 'azure-invoice', source: 'billing-account',
-    status: p.status || 'Unknown',
-    invoiceDate: p.invoiceDate?.slice(0,10) || '',
-    periodStart: p.invoicePeriodStartDate?.slice(0,10) || '',
-    periodEnd: p.invoicePeriodEndDate?.slice(0,10) || '',
-    dueDate: p.dueDate?.slice(0,10) || '',
-    amountDue: p.amountDue?.value ?? 0,
-    billedAmount: p.billedAmount?.value ?? 0,
-    subTotal: p.subTotal?.value ?? 0,
-    taxAmount: p.taxAmount?.value ?? 0,
-    totalAmount: p.totalAmount?.value ?? p.billedAmount?.value ?? 0,
-    amount: p.totalAmount?.value ?? p.billedAmount?.value ?? 0,
-    currency: p.amountDue?.currency ?? 'USD',
-    downloadUrl: downloadDoc?.url || null,
-    billingProfile: p.billingProfileDisplayName || '',
-    paymentMethod: payment ? `${payment.paymentMethodType || payment.paymentMethodFamily || ''}`.trim() : '',
-    paymentDate: payment?.date?.slice(0,10) || '',
-    paymentAmount: payment?.amount?.value ?? 0,
-    tenant: tenant?.name || 'Avontus Software',
-    tenantColor: tenant?.color || '#60a5fa',
-    tenantId: tenant?.id || AVONTUS_TENANT,
-    subName: p.billingProfileDisplayName || '',
-    documents: p.documents || [],
-    bySub: null, byTenant: null,
-  };
 }
 
 export async function fetchAllInvoices(subscriptions, tenants) {
