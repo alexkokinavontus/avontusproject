@@ -1,6 +1,6 @@
 // Avontus Accounting Portal - Azure API
 // Lighthouse enabled: single Avontus tenant token covers all 4 tenants
-// All 14 subscriptions accessible via bd98204b tenant
+// Performance: parallel batched fetching with caching
 
 import { getUserMgmtToken, getAllTenantTokens } from '../auth/msal';
 
@@ -8,7 +8,16 @@ const BASE = 'https://azurereader-api.azurewebsites.net/api/proxy';
 const AVONTUS_TENANT = 'bd98204b-b981-4d03-8796-356d537927eb';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Tenant config for display
+// ── Cache ─────────────────────────────────────────────────────────────────────
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const cache = new Map();
+function cacheGet(key) {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.val;
+  return null;
+}
+function cacheSet(key, val) { cache.set(key, { val, ts: Date.now() }); return val; }
+
 export const TENANTS = [
   { name: 'Avontus Software',  id: 'bd98204b-b981-4d03-8796-356d537927eb', color: '#60a5fa' },
   { name: 'Places2Swim',       id: 'afafd9ca-9af6-4f95-8032-f71fc87ef9e5', color: '#34d399' },
@@ -29,13 +38,13 @@ export function parseRows(resp, sub, tenant) {
   if (!props) return [];
   const cols = (props.columns || []).map(c => c.name.toLowerCase());
   const rows = props.rows || [];
-  const ci = name => cols.findIndex(c => c === name.toLowerCase());
-  const costI = ci('cost') >= 0 ? ci('cost') : ci('pretaxcost');
-  const svcI  = ci('servicename');
-  const rgI   = ci('resourcegroupname');
-  const rtI   = ci('resourcetype');
-  const dateI = ci('billingmonth') >= 0 ? ci('billingmonth') : ci('usagedate') >= 0 ? ci('usagedate') : -1;
-
+  const costI = cols.findIndex(c => c === 'cost' || c === 'pretaxcost');
+  const svcI  = cols.findIndex(c => c === 'servicename');
+  const rgI   = cols.findIndex(c => c === 'resourcegroupname');
+  const rtI   = cols.findIndex(c => c === 'resourcetype');
+  const dateI = cols.findIndex(c => c === 'billingmonth') >= 0
+    ? cols.findIndex(c => c === 'billingmonth')
+    : cols.findIndex(c => c === 'usagedate');
   return rows.map(r => ({
     cost:         costI >= 0 ? (parseFloat(r[costI]) || 0) : 0,
     service:      svcI  >= 0 ? (r[svcI]  || 'Unknown') : 'Unknown',
@@ -50,117 +59,129 @@ export function parseRows(resp, sub, tenant) {
   })).filter(r => r.cost > 0.001);
 }
 
-async function proxyGet(path, apiVersion = '2022-12-01', userToken = null) {
+async function proxyFetch(path, options = {}) {
+  const { apiVersion = '2022-12-01', method = 'GET', body, userToken } = options;
   const headers = { 'Content-Type': 'application/json' };
   if (userToken) headers['X-User-Token'] = userToken;
-  // Always use Avontus tenant - Lighthouse handles cross-tenant
-  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}&tenantId=${AVONTUS_TENANT}`, { headers });
-  const text = await res.text();
-  if (!text) throw new Error(`Empty response from ${path}`);
-  try { return JSON.parse(text); }
-  catch { throw new Error(`Bad JSON from ${path}: ${text.slice(0,200)}`); }
-}
-
-async function proxyPost(path, body, apiVersion = '2023-11-01', userToken = null) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (userToken) headers['X-User-Token'] = userToken;
-  const res = await fetch(`${BASE}/${path}?api-version=${apiVersion}&tenantId=${AVONTUS_TENANT}`, {
-    method: 'POST',
+  const url = `${BASE}/${path}?api-version=${apiVersion}&tenantId=${AVONTUS_TENANT}`;
+  const res = await fetch(url, {
+    method,
     headers,
-    body: JSON.stringify(body)
+    ...(body ? { body: JSON.stringify(body) } : {})
   });
   const text = await res.text();
-  if (!text) throw new Error(`Empty response from ${path}`);
+  if (!text) throw new Error(`Empty response: ${path}`);
   try { return JSON.parse(text); }
-  catch { throw new Error(`Bad JSON from ${path}: ${text.slice(0,200)}`); }
+  catch { throw new Error(`Bad JSON: ${text.slice(0, 200)}`); }
 }
 
-// List ALL subscriptions - Lighthouse makes them all visible from Avontus tenant
+const proxyGet  = (path, apiVersion, userToken) => proxyFetch(path, { apiVersion, userToken });
+const proxyPost = (path, body, apiVersion = '2023-11-01') => proxyFetch(path, { method: 'POST', body, apiVersion });
+
 export async function listSubscriptions() {
+  const cached = cacheGet('subscriptions');
+  if (cached) return cached;
   const d = await proxyGet('subscriptions');
-  const allSubs = d.value || [];
-  // Map tenantId to our tenant config for display
-  return allSubs.filter(s => s.state === 'Enabled').map(s => {
-    const tenant = TENANTS.find(t => t.id === s.tenantId) || TENANTS[0];
-    return { ...s, tenant, tenantName: tenant.name };
-  });
+  const subs = (d.value || [])
+    .filter(s => s.state === 'Enabled')
+    .map(s => {
+      const tenant = TENANTS.find(t => t.id === s.tenantId) || TENANTS[0];
+      return { ...s, tenant, tenantName: tenant.name };
+    });
+  return cacheSet('subscriptions', subs);
 }
 
-async function fetchOneSub(sub, start, end) {
+// ── Parallel cost fetcher ────────────────────────────────────────────────────
+// Fetches all 3 query types for one subscription in parallel
+async function fetchOneSubParallel(sub, start, end) {
   const sid = sub.subscriptionId;
   const tenant = sub.tenant || TENANTS[0];
-  let detRows = [], monRows = [], dayRows = [];
+  const costPath = `subscriptions/${sid}/providers/Microsoft.CostManagement/query`;
 
-  try {
-    const det = await proxyPost(
-      `subscriptions/${sid}/providers/Microsoft.CostManagement/query`,
-      { type:'ActualCost', timeframe:'Custom', timePeriod:{from:start,to:end},
-        dataset:{ granularity:'None',
-          aggregation:{totalCost:{name:'Cost',function:'Sum'}},
-          grouping:[
-            {type:'Dimension',name:'ServiceName'},
-            {type:'Dimension',name:'ResourceGroupName'},
-            {type:'Dimension',name:'ResourceType'},
-          ]
-        }
-      }
+  const makeBody = (granularity, grouping) => ({
+    type: 'ActualCost',
+    timeframe: 'Custom',
+    timePeriod: { from: start, to: end },
+    dataset: {
+      granularity,
+      aggregation: { totalCost: { name: 'Cost', function: 'Sum' } },
+      ...(grouping ? { grouping } : {})
+    }
+  });
+
+  // Check cache
+  const cacheKey = `cost:${sid}:${start}:${end}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return { sub, ...cached };
+
+  // Fire all 3 queries in parallel
+  const [detRes, monRes, dayRes] = await Promise.allSettled([
+    proxyPost(costPath, makeBody('None', [
+      { type: 'Dimension', name: 'ServiceName' },
+      { type: 'Dimension', name: 'ResourceGroupName' },
+      { type: 'Dimension', name: 'ResourceType' },
+    ])),
+    proxyPost(costPath, makeBody('Monthly', [{ type: 'Dimension', name: 'ServiceName' }])),
+    proxyPost(costPath, makeBody('Daily')),
+  ]);
+
+  const detRows = detRes.status === 'fulfilled' ? parseRows(detRes.value, sub, tenant) : [];
+  const monRows = monRes.status === 'fulfilled' ? parseRows(monRes.value, sub, tenant) : [];
+  const dayRows = dayRes.status === 'fulfilled' ? parseRows(dayRes.value, sub, tenant) : [];
+
+  const result = { detRows, monRows, dayRows };
+  cacheSet(cacheKey, result);
+  return { sub, ...result };
+}
+
+// Rate limit: Azure allows ~10 concurrent CostManagement queries
+// Process in batches of 4 with a small delay between batches
+async function fetchInBatches(subscriptions, start, end, onProgress) {
+  const BATCH_SIZE = 4;
+  const BATCH_DELAY = 1200; // ms between batches
+  const allDetailed = [], allMonthly = [], allDaily = [], errors = [];
+  let completed = 0;
+
+  for (let i = 0; i < subscriptions.length; i += BATCH_SIZE) {
+    const batch = subscriptions.slice(i, i + BATCH_SIZE);
+
+    // Report progress for first sub in batch
+    if (onProgress) onProgress(completed, subscriptions.length,
+      batch.map(s => s.displayName.split(':')[0].trim()).join(', '));
+
+    // Fetch batch in parallel
+    const results = await Promise.allSettled(
+      batch.map(sub => fetchOneSubParallel(sub, start, end))
     );
-    detRows = parseRows(det, sub, tenant);
-  } catch(e) { console.warn('det failed:', sub.displayName, e.message); }
 
-  await sleep(500);
-
-  try {
-    const mon = await proxyPost(
-      `subscriptions/${sid}/providers/Microsoft.CostManagement/query`,
-      { type:'ActualCost', timeframe:'Custom', timePeriod:{from:start,to:end},
-        dataset:{ granularity:'Monthly',
-          aggregation:{totalCost:{name:'Cost',function:'Sum'}},
-          grouping:[{type:'Dimension',name:'ServiceName'}]
-        }
+    results.forEach((res, j) => {
+      completed++;
+      if (res.status === 'fulfilled') {
+        allDetailed.push(...res.value.detRows);
+        allMonthly.push(...res.value.monRows);
+        allDaily.push(...res.value.dayRows);
+      } else {
+        errors.push(`${batch[j].displayName}: ${res.reason?.message || 'failed'}`);
       }
-    );
-    monRows = parseRows(mon, sub, tenant);
-  } catch(e) { console.warn('mon failed:', sub.displayName, e.message); }
+    });
 
-  await sleep(500);
+    // Delay between batches (except last)
+    if (i + BATCH_SIZE < subscriptions.length) {
+      await sleep(BATCH_DELAY);
+    }
+  }
 
-  try {
-    const day = await proxyPost(
-      `subscriptions/${sid}/providers/Microsoft.CostManagement/query`,
-      { type:'ActualCost', timeframe:'Custom', timePeriod:{from:start,to:end},
-        dataset:{ granularity:'Daily',
-          aggregation:{totalCost:{name:'Cost',function:'Sum'}},
-        }
-      }
-    );
-    dayRows = parseRows(day, sub, tenant);
-  } catch(e) { console.warn('day failed:', sub.displayName, e.message); }
-
-  return { sub, detRows, monRows, dayRows };
+  return { allDetailed, allMonthly, allDaily, errors };
 }
 
 export async function fetchAllData(start, end, onProgress) {
   const subscriptions = await listSubscriptions();
-  const allDetailed = [], allMonthly = [], allDaily = [], errors = [];
-
-  for (let i = 0; i < subscriptions.length; i++) {
-    const sub = subscriptions[i];
-    if (onProgress) onProgress(i, subscriptions.length, `${sub.tenant?.name} · ${sub.displayName}`);
-    try {
-      const result = await fetchOneSub(sub, start, end);
-      allDetailed.push(...result.detRows);
-      allMonthly.push(...result.monRows);
-      allDaily.push(...result.dayRows);
-    } catch(e) { errors.push(`${sub.displayName}: ${e.message}`); }
-    if (i < subscriptions.length - 1) await sleep(800);
-  }
-
+  const { allDetailed, allMonthly, allDaily, errors } =
+    await fetchInBatches(subscriptions, start, end, onProgress);
   return { subscriptions, tenants: TENANTS, allDetailed, allMonthly, allDaily, errors };
 }
 
 // ── Invoices ──────────────────────────────────────────────────────────────────
-
 const BILLING_ACCOUNTS = [
   "6598a801-67b3-5760-fd9c-b6559890b00e:180c8926-382d-41a9-a1da-8eae6ee475ae_2019-05-31",
   "6598a801-67b3-5760-fd9c-b6559890b00e:729679fa-ac97-4460-a0f5-090bd55ea2b6_2019-05-31",
@@ -173,15 +194,12 @@ function normalizeBillingAccountInvoice(inv, tenant) {
   const downloadDoc = (p.documents || []).find(d => d.kind === 'Invoice') || (p.documents || [])[0];
   const payment = (p.payments || [])[0];
   return {
-    id: inv.name,
-    name: inv.name,
-    type: 'azure-invoice',
-    source: 'billing-account',
+    id: inv.name, name: inv.name, type: 'azure-invoice', source: 'billing-account',
     status: p.status || 'Unknown',
-    invoiceDate: p.invoiceDate ? p.invoiceDate.slice(0,10) : '',
-    periodStart: p.invoicePeriodStartDate ? p.invoicePeriodStartDate.slice(0,10) : '',
-    periodEnd: p.invoicePeriodEndDate ? p.invoicePeriodEndDate.slice(0,10) : '',
-    dueDate: p.dueDate ? p.dueDate.slice(0,10) : '',
+    invoiceDate: p.invoiceDate?.slice(0,10) || '',
+    periodStart: p.invoicePeriodStartDate?.slice(0,10) || '',
+    periodEnd: p.invoicePeriodEndDate?.slice(0,10) || '',
+    dueDate: p.dueDate?.slice(0,10) || '',
     amountDue: p.amountDue?.value ?? 0,
     billedAmount: p.billedAmount?.value ?? 0,
     subTotal: p.subTotal?.value ?? 0,
@@ -190,39 +208,38 @@ function normalizeBillingAccountInvoice(inv, tenant) {
     amount: p.totalAmount?.value ?? p.billedAmount?.value ?? 0,
     currency: p.amountDue?.currency ?? 'USD',
     downloadUrl: downloadDoc?.url || null,
-    documentType: p.documentType || 'Invoice',
-    isMonthly: p.isMonthlyInvoice || false,
     billingProfile: p.billingProfileDisplayName || '',
     paymentMethod: payment ? `${payment.paymentMethodType || payment.paymentMethodFamily || ''}`.trim() : '',
-    paymentDate: payment?.date ? payment.date.slice(0,10) : '',
+    paymentDate: payment?.date?.slice(0,10) || '',
     paymentAmount: payment?.amount?.value ?? 0,
     tenant: tenant?.name || 'Avontus Software',
     tenantColor: tenant?.color || '#60a5fa',
     tenantId: tenant?.id || AVONTUS_TENANT,
     subName: p.billingProfileDisplayName || '',
     documents: p.documents || [],
-    bySub: null,
-    byTenant: null,
+    bySub: null, byTenant: null,
   };
 }
 
 export async function fetchAllInvoices(subscriptions, tenants) {
+  const cached = cacheGet('invoices');
+  if (cached) return cached;
+
   const allInvoices = [];
   const userToken = await getUserMgmtToken();
-
+  const avontusTenant = tenants.find(t => t.name === 'Avontus Software') || tenants[0];
   const now = new Date();
   const startDate = new Date(now.getFullYear() - 2, 0, 1).toISOString().slice(0,10);
   const endDate = now.toISOString().slice(0,10);
-  const avontusTenant = tenants.find(t => t.name === 'Avontus Software') || tenants[0];
 
-  // Fetch from all billing accounts + profiles
-  for (const ba of BILLING_ACCOUNTS) {
+  // Fetch all billing profiles in parallel per billing account
+  await Promise.all(BILLING_ACCOUNTS.map(async ba => {
     try {
       const profilesRes = await proxyGet(
         `providers/Microsoft.Billing/billingAccounts/${ba}/billingProfiles`,
         '2020-05-01', userToken
       );
-      for (const profile of profilesRes.value || []) {
+      await Promise.all((profilesRes.value || []).map(async profile => {
         try {
           const res = await proxyGet(
             `providers/Microsoft.Billing/billingAccounts/${ba}/billingProfiles/${profile.name}/invoices`,
@@ -238,51 +255,33 @@ export async function fetchAllInvoices(subscriptions, tenants) {
               subName: profile.properties?.displayName || profile.name,
             });
           });
-        } catch(e) { /* skip */ }
-        await sleep(100);
-      }
-    } catch(e) {
-      // Fallback to billing account level
-      try {
-        const res = await proxyGet(
-          `providers/Microsoft.Billing/billingAccounts/${ba}/invoices`,
-          `2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}`,
-          userToken
-        );
-        (res.value || []).forEach(inv => {
-          allInvoices.push({ ...normalizeBillingAccountInvoice(inv, avontusTenant), billingAccountName: ba });
-        });
-      } catch(e2) { /* skip */ }
-    }
-    await sleep(150);
-  }
+        } catch(e) { /* skip profile */ }
+      }));
+    } catch(e) { /* skip BA */ }
+  }));
 
-  // Also discover billing accounts in other tenants via Lighthouse
-  // Since Lighthouse delegates subscription access but not billing accounts,
-  // we still need to enumerate BAs per tenant using the user token
+  // Also check other tenant billing accounts using per-tenant tokens
   const tenantTokens = await getAllTenantTokens();
-  for (const tenant of tenants.filter(t => t.id !== AVONTUS_TENANT)) {
+  await Promise.all(tenants.filter(t => t.id !== AVONTUS_TENANT).map(async tenant => {
     const tToken = tenantTokens[tenant.id] || userToken;
     try {
-      const baRes = await fetch(
+      const res = await fetch(
         `${BASE}/providers/Microsoft.Billing/billingAccounts?api-version=2020-05-01&tenantId=${tenant.id}`,
         { headers: { 'Content-Type': 'application/json', 'X-User-Token': tToken } }
       ).then(r => r.json());
-
-      for (const ba of baRes.value || []) {
+      await Promise.all((res.value || []).map(async ba => {
         try {
           const profilesRes = await fetch(
             `${BASE}/providers/Microsoft.Billing/billingAccounts/${ba.name}/billingProfiles?api-version=2020-05-01&tenantId=${tenant.id}`,
             { headers: { 'Content-Type': 'application/json', 'X-User-Token': tToken } }
           ).then(r => r.json());
-
-          for (const profile of profilesRes.value || []) {
+          await Promise.all((profilesRes.value || []).map(async profile => {
             try {
-              const res = await fetch(
+              const invRes = await fetch(
                 `${BASE}/providers/Microsoft.Billing/billingAccounts/${ba.name}/billingProfiles/${profile.name}/invoices?api-version=2020-05-01&periodStartDate=${startDate}&periodEndDate=${endDate}&tenantId=${tenant.id}`,
                 { headers: { 'Content-Type': 'application/json', 'X-User-Token': tToken } }
               ).then(r => r.json());
-              (res.value || []).forEach(inv => {
+              (invRes.value || []).forEach(inv => {
                 allInvoices.push({
                   ...normalizeBillingAccountInvoice(inv, tenant),
                   billingAccountName: ba.name,
@@ -292,23 +291,25 @@ export async function fetchAllInvoices(subscriptions, tenants) {
                 });
               });
             } catch(e) { /* skip */ }
-            await sleep(100);
-          }
+          }));
         } catch(e) { /* skip */ }
-        await sleep(150);
-      }
-    } catch(e) { console.warn(`${tenant.name} billing accounts failed:`, e.message); }
-  }
+      }));
+    } catch(e) { /* skip tenant */ }
+  }));
 
-  // Deduplicate and sort newest first
   const seen = new Set();
-  return allInvoices
+  const result = allInvoices
     .filter(i => { if (seen.has(i.id)) return false; seen.add(i.id); return true; })
     .sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''));
+
+  return cacheSet('invoices', result);
 }
 
 export async function fetchInvoiceTransactions(inv, userToken) {
   const invoiceId = inv.name || inv.id;
+  const cacheKey = `txn:${invoiceId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
 
   // Try billing profile path first
   if (inv.billingAccountName && inv.billingProfileName) {
@@ -317,21 +318,19 @@ export async function fetchInvoiceTransactions(inv, userToken) {
         `providers/Microsoft.Billing/billingAccounts/${inv.billingAccountName}/billingProfiles/${inv.billingProfileName}/invoices/${invoiceId}/transactions`,
         '2020-05-01', userToken
       );
-      if ((res.value || []).length > 0) return res.value;
+      if ((res.value || []).length > 0) return cacheSet(cacheKey, res.value);
     } catch(e) { /* try next */ }
   }
 
-  // Try billing account path
+  // Try billing account paths
   for (const BA of inv.billingAccountName ? [inv.billingAccountName] : BILLING_ACCOUNTS) {
     try {
       const res = await proxyGet(
         `providers/Microsoft.Billing/billingAccounts/${BA}/invoices/${invoiceId}/transactions`,
         '2020-05-01', userToken
       );
-      if ((res.value || []).length > 0) return res.value;
+      if ((res.value || []).length > 0) return cacheSet(cacheKey, res.value);
     } catch(e) { /* try next */ }
-    await sleep(200);
   }
-
   return [];
 }
